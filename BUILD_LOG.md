@@ -219,3 +219,159 @@ than pgTAP's SQL-level `SET ROLE` simulation would be.
   can insert/update trips and trip_riders for their own trips but not
   another driver's trip; admin E can select and update all six tables;
   anonymous requests return zero rows on all six tables.
+
+## Prompt #3: Public landing page, auth (LinkedIn OAuth) + onboarding
+
+**Scope:** Public landing page, LinkedIn OIDC sign-in via Supabase Auth,
+first-login profile sync, an onboarding flow that sets `people.role` (and
+creates a `drivers` row for drivers), and route guards across every route.
+No ride-request/driver/admin dashboard content — those routes still render
+their Prompt #1 placeholder bodies, just now behind auth.
+
+**Routes/files/components introduced:**
+- [src/routes/index.tsx](src/routes/index.tsx) — public landing page: car
+  icon, one-paragraph explanation, "Sign in with LinkedIn" CTA that routes to
+  `/login`. `beforeLoad` redirects an already-authenticated visitor to
+  `/onboarding` (no role yet) or their role's home.
+- [src/routes/login.tsx](src/routes/login.tsx) — "Sign in with LinkedIn"
+  button calling `supabase.auth.signInWithOAuth({ provider: 'linkedin_oidc',
+  options: { redirectTo: '<origin>/auth/callback' } })`. Same
+  already-authenticated redirect as `/`.
+- [src/routes/auth.callback.tsx](src/routes/auth.callback.tsx) — new route,
+  not in the prompt's explicit list but required for the PKCE OAuth code
+  flow: exchanges the `?code=` LinkedIn redirects back with for a session
+  (server-side, so the session cookie is set before any client code runs),
+  then redirects to `/` to let its role-based redirect take over.
+- [src/routes/onboarding.tsx](src/routes/onboarding.tsx) — "I need a ride" /
+  "I can drive" choice; the driver path shows a form for
+  `vehicle_make_model`, `license_plate`, `passenger_capacity`,
+  `luggage_capacity`. Submits via a server function, then redirects to
+  `/request` or `/driver`.
+- [src/lib/auth/server-functions.ts](src/lib/auth/server-functions.ts) —
+  `createServerFn` functions: `getAuthSession` (reads the request's cookies,
+  returns `{ userId, person }` or `null`), `exchangeCodeForSession`,
+  `signOutServer` (unused by the UI — client-side `signOut()` is used
+  instead, see below; kept in case a server-triggered sign-out is needed
+  later), `completeOnboarding` (updates `people.role`, inserts `drivers` row).
+  Named `server-functions.ts`, not `session.server.ts`, because TanStack
+  Start's Vite plugin hard-blocks any client-bundle import of files matching
+  `*.server.*` — even ones that only export `createServerFn` handlers, which
+  are supposed to be safely callable from the client via RPC. Discovered via
+  a failed `vite build` (`[import-protection] Import denied in client
+  environment`).
+- [src/lib/auth/route-guards.ts](src/lib/auth/route-guards.ts) —
+  `requireSession()` (redirect to `/login` if signed out) and
+  `requireOnboardedSession()` (also redirect to `/onboarding` if
+  `role` is null), both `throw redirect(...)` for use in a route's
+  `beforeLoad`. Used by `/request`, `/driver`, `/admin`, `/onboarding`.
+- [src/lib/auth/auth-context.tsx](src/lib/auth/auth-context.tsx) —
+  `AuthProvider` + `useAuth()`. Wraps a TanStack Query `useQuery` around
+  `getAuthSession` (query key `authSessionQueryKey`), and subscribes to
+  `supabase.auth.onAuthStateChange` to invalidate that query + the router on
+  sign-in/out (needed because the OAuth callback's redirect happens outside
+  React state, so the client needs to notice the session changed).
+- [src/lib/auth/types.ts](src/lib/auth/types.ts) — `Person`/`AuthSession`
+  types mirroring the `people` row, plus `homeRouteForPerson()`
+  (`is_admin` → `/admin`, `role === 'driver'` → `/driver`, else `/request`).
+- [src/lib/supabase/client.ts](src/lib/supabase/client.ts) and
+  [src/lib/supabase/server.ts](src/lib/supabase/server.ts) — rewritten to use
+  `@supabase/ssr`'s `createBrowserClient`/`createServerClient` instead of
+  plain `createClient`, so the session lives in cookies readable by both.
+  The server client's cookie adapter uses `getCookies`/`setCookie` from
+  `@tanstack/react-start/server` — this is what makes SSR `beforeLoad` route
+  guards possible (they run before any client JS, so they need the session
+  server-side).
+- [src/components/nav.tsx](src/components/nav.tsx) — now reads `useAuth()`
+  for the real user (avatar, name/initials, working sign-out) instead of the
+  Prompt #1 placeholder, and renders `null` entirely on `/`, `/login`,
+  `/auth/callback`, `/onboarding` (signed out or mid-onboarding shouldn't
+  show a dashboard nav).
+- [src/router.tsx](src/router.tsx) creates one `QueryClient` per router
+  instance and passes it through router context;
+  [src/routes/__root.tsx](src/routes/__root.tsx) reads that context
+  (`Route.useRouteContext()`) and wraps the app in `QueryClientProvider` +
+  `AuthProvider`.
+- [supabase/config.toml](supabase/config.toml) — added the
+  `[auth.external.linkedin_oidc]` provider block (`enabled = true`,
+  `client_id`/`secret` via `env()` substitution), since it wasn't in the
+  Prompt #1/#2 scaffold at all.
+- [.env.example](.env.example) — added
+  `SUPABASE_AUTH_EXTERNAL_LINKEDIN_OIDC_CLIENT_ID` /
+  `_SECRET`, needed by `supabase/config.toml` for local dev only (hosted
+  Supabase configures this in the dashboard instead).
+- `package.json`: added `@supabase/ssr` and `@tanstack/react-query`.
+- [.claude/launch.json](.claude/launch.json) — added so `npm run dev` can be
+  previewed via the browser tool (`preview_start`); didn't exist before this
+  prompt.
+
+**Assumptions made:**
+- **"Your call, pick one" on landing-page sign-in:** went with the CTA
+  routing to `/login` rather than triggering `signInWithOAuth` directly from
+  `/`, so there's one dedicated page that owns loading/error state for the
+  sign-in attempt and matches the prompt's explicit `/login` spec (item 1).
+- **Route guards check "signed in + has a role," not "has the right role for
+  this specific page."** A requester who manually navigates to `/driver`
+  currently isn't blocked — CLAUDE.md's guard spec only says "redirect users
+  without a role to /onboarding," not "enforce role-to-route matching."
+  Flagging since `/driver` and `/admin` will need real role checks once they
+  have actual driver/admin functionality (right now they're still Prompt #1
+  placeholder text, so the blast radius of this gap is currently zero).
+- **`getAuthSession` re-validates via `supabase.auth.getUser()`** (a network
+  round-trip to Supabase Auth) rather than trusting `getSession()`'s
+  locally-decoded JWT, per Supabase's own guidance that `getSession()` is
+  spoofable server-side. This makes every guarded page load do one extra
+  auth call; acceptable for this app's traffic but worth knowing if `/admin`
+  etc. ever need to feel snappier.
+- **First-login profile sync uses the existing Prompt #2 trigger as-is** —
+  `handle_new_user()` already pulls `name`/`avatar_url` from
+  `raw_user_meta_data` and `email` from `auth.users`. LinkedIn's OIDC claims
+  map to `name` and `picture`; Supabase's LinkedIn OIDC integration is
+  documented to normalize `picture` into `avatar_url` in
+  `raw_user_meta_data`, so no trigger changes were needed — flagging in case
+  the real provider's payload doesn't match and `avatar_url` comes back null
+  in practice.
+
+**Left as placeholder / open questions:**
+- `/request`, `/driver`, `/admin` still render only their Prompt #1
+  placeholder heading — this prompt only added the guards in front of them.
+- No role-to-route enforcement (see assumption above) — a signed-in
+  requester can currently view `/driver`'s and `/admin`'s placeholder text.
+- `signOutServer` (server function) is defined but unused; sign-out is done
+  client-side via `supabaseBrowserClient.auth.signOut()` in
+  [auth-context.tsx](src/lib/auth/auth-context.tsx) so the browser's cookie
+  store updates immediately without a round trip. Remove `signOutServer` if
+  nothing ends up needing a server-triggered sign-out.
+- **Not live-tested against real LinkedIn OAuth.** No real LinkedIn OAuth app
+  exists for this project yet, so local `supabase/config.toml` has
+  placeholder `client_id`/`secret` values. Verified as far as: clicking
+  "Sign in with LinkedIn" correctly redirects to LinkedIn's real
+  `https://api.linkedin.com/oauth/v2/authorization` endpoint with the
+  correct `redirect_uri` (Supabase's `/auth/v1/callback`) and `redirect_to`
+  (this app's `/auth/callback`) — i.e., the client-side wiring is right up to
+  the point LinkedIn takes over. The rest of the flow (LinkedIn login →
+  `/auth/callback` code exchange → onboarding → role home) is implemented
+  per Supabase's documented PKCE pattern but not exercised end-to-end.
+  **Needs a real LinkedIn OAuth app (client ID/secret, configured redirect
+  URI) before this can be fully verified**, either locally via
+  `supabase/config.toml`/`.env` or in a hosted Supabase project's dashboard.
+
+**Verification:**
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests` — clean.
+- `npx prettier --check` — clean on all files touched by this prompt (a few
+  pre-existing repo files — `README.md`, `CLAUDE.md`, `.cta.json`,
+  `tsconfig.json`, `prettier.config.js`, `src/styles.css` — were already
+  failing `--check` before this prompt; left untouched, not this prompt's
+  scope).
+- `npm run build` — production build (client + SSR) succeeds.
+- Live-checked in a real browser via the preview tool, local Supabase stack
+  (`supabase start`) with `[auth.external.linkedin_oidc]` enabled:
+  - `/` renders the landing page with no nav, correct branding/copy, working
+    "Sign in with LinkedIn" → `/login` navigation.
+  - Unauthenticated `/request`, `/driver`, `/admin`, `/onboarding` all
+    redirect to `/login` (confirmed via `location.href` after navigation).
+  - Clicking "Sign in with LinkedIn" on `/login` redirects to LinkedIn's
+    real authorization endpoint with correct query params (see open
+    question above for what wasn't verifiable without real credentials).
+  - No console errors other than a one-time Vite cold-start dep-optimize
+    warning on first load (unrelated, resolved itself on reconnect).

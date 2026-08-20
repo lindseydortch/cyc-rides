@@ -1,19 +1,32 @@
 import { Car, LogOut } from 'lucide-react'
-import { Link } from '@tanstack/react-router'
+import { Link, useRouterState } from '@tanstack/react-router'
 
-// Placeholder until real auth lands (Prompt 3) — swap for session data then.
-const placeholderUser = {
-  name: 'Guest User',
-  initials: 'GU',
+import { useAuth } from '../lib/auth/auth-context'
+import { homeRouteForPerson } from '../lib/auth/types'
+
+// Routes that show their own header/CTA instead of the app nav — public
+// landing, auth, and onboarding aren't a signed-in role's dashboard yet.
+const NO_NAV_ROUTES = ['/', '/login', '/auth/callback', '/onboarding']
+
+function initials(name: string | null) {
+  if (!name) return '?'
+  return name
+    .split(' ')
+    .map((part) => part[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
 }
 
-const navLinks = [
-  { to: '/request', label: 'Request a Ride' },
-  { to: '/driver', label: 'Driver' },
-  { to: '/admin', label: 'Admin' },
-] as const
-
 export function Nav() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const { session, signOut } = useAuth()
+
+  if (NO_NAV_ROUTES.includes(pathname) || !session) return null
+
+  const { person } = session
+  const links = [{ to: homeRouteForPerson(person), label: 'Home' }] as const
+
   return (
     <header className="border-b border-line bg-background">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
@@ -25,7 +38,7 @@ export function Nav() {
         </Link>
 
         <nav className="hidden items-center gap-6 sm:flex">
-          {navLinks.map((link) => (
+          {links.map((link) => (
             <Link
               key={link.to}
               to={link.to}
@@ -38,14 +51,23 @@ export function Nav() {
         </nav>
 
         <div className="flex items-center gap-3">
-          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-cloud text-sm font-medium text-ink">
-            {placeholderUser.initials}
-          </span>
+          {person.avatar_url ? (
+            <img
+              src={person.avatar_url}
+              alt=""
+              className="h-8 w-8 rounded-full object-cover"
+            />
+          ) : (
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-cloud text-sm font-medium text-ink">
+              {initials(person.name)}
+            </span>
+          )}
           <span className="hidden text-sm font-medium text-ink sm:inline">
-            {placeholderUser.name}
+            {person.name ?? person.email}
           </span>
           <button
             type="button"
+            onClick={() => void signOut()}
             className="flex items-center gap-1 rounded-md border border-line px-3 py-1.5 text-sm font-medium text-muted hover:bg-cloud hover:text-ink"
           >
             <LogOut className="h-4 w-4" />
