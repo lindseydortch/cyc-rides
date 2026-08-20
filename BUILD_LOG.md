@@ -9,6 +9,7 @@ structure and shared nav layout. No feature logic, no auth flow, no landing
 page content — those come in later prompts.
 
 **Routes/files/components introduced:**
+
 - Scaffolded via `@tanstack/cli create` (the current TanStack Start generator;
   `create-tsrouter-app` is deprecated and now defaults to router-only mode
   without Start) — React, ESLint/Prettier toolchain, Nitro deployment
@@ -53,6 +54,7 @@ page content — those come in later prompts.
   [src/routes/admin.tsx](src/routes/admin.tsx).
 
 **Assumptions made:**
+
 - `SUPABASE_URL`/`SUPABASE_ANON_KEY` have no `VITE_` prefix, but Vite only
   exposes `VITE_`-prefixed env vars to the client bundle by default. Rather
   than rename the vars (and break the prompt's exact `.env.example` naming),
@@ -71,6 +73,7 @@ page content — those come in later prompts.
   tooling; no lockfile or preference existed yet).
 
 **Left as placeholder / open questions:**
+
 - All route bodies are just a heading + "coming in a later prompt" text.
 - Nav's user name/avatar/logout button are hardcoded to a "Guest User"
   placeholder — not wired to Supabase auth session state yet.
@@ -82,6 +85,7 @@ page content — those come in later prompts.
   once the project's shape is more settled.
 
 **Verification:**
+
 - `npx tsc --noEmit` — clean, no errors.
 - `npx eslint .` — clean, no errors.
 - `npm run build` — production build succeeds (client + SSR bundles).
@@ -99,6 +103,7 @@ an automated test suite that actually exercises those policies against a
 real local Postgres instance. No frontend/UI changes.
 
 **Routes/files/components introduced:**
+
 - [supabase/migrations/20260820000000_schema_and_rls.sql](supabase/migrations/20260820000000_schema_and_rls.sql)
   — the single migration file: tables, indexes, the `handle_new_user()`
   trigger function + trigger, three `SECURITY DEFINER` helper functions
@@ -130,19 +135,20 @@ more faithful test of "can user X actually read/write row Y through the API"
 than pgTAP's SQL-level `SET ROLE` simulation would be.
 
 **Judgment calls on RLS policy intent (flagging per CLAUDE.md):**
+
 - **Table-level GRANTs were required but not mentioned in the prompt.**
-  Postgres checks table-level privileges *before* RLS narrows rows — RLS
+  Postgres checks table-level privileges _before_ RLS narrows rows — RLS
   alone does nothing if `anon`/`authenticated`/`service_role` have no
   baseline GRANT on the table. This wasn't obvious until the first test run
   failed with `permission denied for table ride_requests`. Added `grant
-  select, insert, update, delete ... to anon, authenticated, service_role`
+select, insert, update, delete ... to anon, authenticated, service_role`
   for all six tables; the actual access control is still enforced entirely
   by RLS, this just gives RLS something to narrow.
 - **`shares_trip_with()` and `is_admin()` are `SECURITY DEFINER`, not plain
   subqueries.** A naive EXISTS-subquery version of the trip-mate check would
   itself be subject to `trip_riders`' own RLS while evaluating — meaning a
   requester querying for their trip-mate's `ride_requests` row would have
-  the inner subquery blocked from seeing the *other* person's `trip_riders`
+  the inner subquery blocked from seeing the _other_ person's `trip_riders`
   row (trip_riders' policy only grants a requester rows "involving their own
   ride_request"). `SECURITY DEFINER` functions bypass RLS internally (since
   they run as the function owner), which is the standard Supabase pattern
@@ -178,6 +184,7 @@ than pgTAP's SQL-level `SET ROLE` simulation would be.
   in the per-table bullets but are covered by policies now).
 
 **Left as placeholder / open questions:**
+
 - No `ride_companions`-specific assertions in the test suite beyond what
   "inherits visibility from parent" implies structurally — the prompt's
   explicit test list didn't call out companions directly. The policy itself
@@ -192,7 +199,7 @@ than pgTAP's SQL-level `SET ROLE` simulation would be.
   fixed, since role-gating inserts wasn't asked for — see judgment call
   above.
 - Local dev requires Docker + the Supabase CLI (`brew install
-  supabase/tap/supabase`, `docker`) to run `supabase start` /
+supabase/tap/supabase`, `docker`) to run `supabase start` /
   `npm run test:rls`. Neither was present in this environment before this
   prompt; both were installed as part of this session. No `.env` was
   created — the test suite pulls credentials from the running local
@@ -200,6 +207,7 @@ than pgTAP's SQL-level `SET ROLE` simulation would be.
   against a real project.
 
 **Verification:**
+
 - `npx tsc --noEmit` — clean.
 - `npx eslint tests/` — clean (one line needed a targeted
   `eslint-disable-next-line` for `no-unnecessary-condition`, where the
@@ -229,13 +237,14 @@ No ride-request/driver/admin dashboard content — those routes still render
 their Prompt #1 placeholder bodies, just now behind auth.
 
 **Routes/files/components introduced:**
+
 - [src/routes/index.tsx](src/routes/index.tsx) — public landing page: car
   icon, one-paragraph explanation, "Sign in with LinkedIn" CTA that routes to
   `/login`. `beforeLoad` redirects an already-authenticated visitor to
   `/onboarding` (no role yet) or their role's home.
 - [src/routes/login.tsx](src/routes/login.tsx) — "Sign in with LinkedIn"
   button calling `supabase.auth.signInWithOAuth({ provider: 'linkedin_oidc',
-  options: { redirectTo: '<origin>/auth/callback' } })`. Same
+options: { redirectTo: '<origin>/auth/callback' } })`. Same
   already-authenticated redirect as `/`.
 - [src/routes/auth.callback.tsx](src/routes/auth.callback.tsx) — new route,
   not in the prompt's explicit list but required for the PKCE OAuth code
@@ -258,7 +267,7 @@ their Prompt #1 placeholder bodies, just now behind auth.
   `*.server.*` — even ones that only export `createServerFn` handlers, which
   are supposed to be safely callable from the client via RPC. Discovered via
   a failed `vite build` (`[import-protection] Import denied in client
-  environment`).
+environment`).
 - [src/lib/auth/route-guards.ts](src/lib/auth/route-guards.ts) —
   `requireSession()` (redirect to `/login` if signed out) and
   `requireOnboardedSession()` (also redirect to `/onboarding` if
@@ -305,6 +314,7 @@ their Prompt #1 placeholder bodies, just now behind auth.
   prompt.
 
 **Assumptions made:**
+
 - **"Your call, pick one" on landing-page sign-in:** went with the CTA
   routing to `/login` rather than triggering `signInWithOAuth` directly from
   `/`, so there's one dedicated page that owns loading/error state for the
@@ -332,6 +342,7 @@ their Prompt #1 placeholder bodies, just now behind auth.
   in practice.
 
 **Left as placeholder / open questions:**
+
 - `/request`, `/driver`, `/admin` still render only their Prompt #1
   placeholder heading — this prompt only added the guards in front of them.
 - No role-to-route enforcement (see assumption above) — a signed-in
@@ -356,6 +367,7 @@ their Prompt #1 placeholder bodies, just now behind auth.
   `supabase/config.toml`/`.env` or in a hosted Supabase project's dashboard.
 
 **Verification:**
+
 - `npx tsc --noEmit` — clean.
 - `npx eslint src tests` — clean.
 - `npx prettier --check` — clean on all files touched by this prompt (a few
@@ -384,6 +396,7 @@ real LinkedIn OAuth app exists. Purely additive: no changes to RLS policies
 or the Prompt #3 LinkedIn auth code.
 
 **Routes/files/components introduced:**
+
 - [scripts/seed-dev-users.ts](scripts/seed-dev-users.ts) — one-off seed
   script, not run automatically. Run it with:
   ```
@@ -391,7 +404,7 @@ or the Prompt #3 LinkedIn auth code.
   npm run seed:dev
   ```
   Pulls the local instance's `service_role` key from `supabase status -o
-  env` (same pattern as [tests/setup/localSupabaseEnv.ts](tests/setup/localSupabaseEnv.ts)
+env` (same pattern as [tests/setup/localSupabaseEnv.ts](tests/setup/localSupabaseEnv.ts)
   — never a checked-in secret) and uses the Admin API to create/update three
   accounts: `dev-requester@example.com` (role `requester`),
   `dev-driver@example.com` (role `driver`, with a placeholder `drivers`
@@ -413,10 +426,11 @@ or the Prompt #3 LinkedIn auth code.
   navigate to `/` and let the existing role-based redirect (from Prompt #3)
   take over — same landing behavior as a real login.
 - `package.json`: added a `seed:dev` script (`node
-  scripts/seed-dev-users.ts`). No new dependency — Node 24's built-in
+scripts/seed-dev-users.ts`). No new dependency — Node 24's built-in
   TypeScript support runs the `.ts` file directly.
 
 **Assumptions made:**
+
 - **Visual distinction:** the dev panel is a dashed amber/orange box with a
   "DEV ONLY — NOT REAL AUTH" warning-icon label and amber-outlined buttons
   (`Dev: sign in as ___`), placed below and visually separated from the
@@ -434,6 +448,7 @@ or the Prompt #3 LinkedIn auth code.
   onboarding form and have a `drivers` row.
 
 **Left as placeholder / open questions:**
+
 - The seed script's `findUserByEmail` pages through `listUsers()` since the
   Admin API has no get-by-email lookup — fine at this scale (a handful of
   local accounts) but would need a different approach if ever reused
@@ -445,6 +460,7 @@ or the Prompt #3 LinkedIn auth code.
   inert in any deployed build regardless).
 
 **Verification:**
+
 - `npx tsc --noEmit` — clean.
 - `npx eslint src scripts tests` — clean (one
   `eslint-disable-next-line @typescript-eslint/no-unnecessary-condition` in
@@ -470,3 +486,362 @@ or the Prompt #3 LinkedIn auth code.
   to `/login` (via the existing route guard re-running on `router.invalidate()`,
   not new logout logic); "Dev: sign in as Admin" lands on `/admin` (correct
   `is_admin` → `/admin` routing from `homeRouteForPerson`).
+
+## Prompt #4: Requester flow
+
+**Scope:** The requester-facing `/request` page: a ride-request form (shown
+until the requester has a `ride_requests` row) that folds into two status
+cards (Arrival/Departure) once submitted, per the prompt's "fold into
+`/request`" option — no separate `/status` route. Also closed an RLS gap
+(below) that Prompt #4 needs but Prompt #2 didn't provide. No driver/admin
+dashboard work — those routes are untouched.
+
+**Routes/files/components introduced:**
+
+- [supabase/migrations/20260821000000_requester_trip_visibility.sql](supabase/migrations/20260821000000_requester_trip_visibility.sql)
+  — see "RLS gap" below.
+- [src/lib/rides/types.ts](src/lib/rides/types.ts) — shared `Airport`,
+  `Leg`, `RideRequestStatus`, `LegStatus`, `TripMate` types.
+- [src/lib/rides/query-keys.ts](src/lib/rides/query-keys.ts) —
+  `rideStatusQueryKey`, shared between the query and the form's
+  invalidate-on-success.
+- [src/lib/rides/server-functions.ts](src/lib/rides/server-functions.ts) —
+  `getMyRideStatus` (GET: own `ride_requests` row + companions, and for each
+  confirmed leg, the trip's `scheduled_time` + trip-mates; returns `null` if
+  the requester hasn't submitted yet) and `createRideRequest` (POST: inserts
+  `ride_requests` + `ride_companions` rows). Also exports `mapTripMates`, a
+  pure function pulled out specifically so trip-mate shaping/self-exclusion
+  has direct unit-test coverage without needing a real request/cookie
+  context (see testing notes below).
+- [src/components/rides/RequestForm.tsx](src/components/rides/RequestForm.tsx)
+  — airport select, arrival/departure flight+datetime fields, repeatable
+  companion name fields (add/remove), client-side required-field validation
+  before calling `createRideRequest`.
+- [src/components/rides/StatusCards.tsx](src/components/rides/StatusCards.tsx)
+  — Arrival/Departure cards; confirmed legs show "Ride confirmed" + scheduled
+  time + a trip-mates list (only rendered when non-empty); unconfirmed legs
+  show "Still needs a ride".
+- [src/routes/request.tsx](src/routes/request.tsx) — `useQuery(getMyRideStatus)`
+  and renders `RequestForm` or `StatusCards` based on whether a
+  `ride_requests` row exists yet.
+- [vitest.config.ts](vitest.config.ts) — new: `jsdom` environment,
+  `globals: true` (required for `@testing-library/react`'s auto-cleanup
+  between tests — without it, DOM nodes leaked across tests in the same
+  file and caused false "multiple elements found" failures), and a setup
+  file for jest-dom matchers. `tests/rls.test.ts` is unaffected: tagged
+  `// @vitest-environment node` so it keeps running under plain Node against
+  the real local Supabase stack, not jsdom.
+- [tests/setup/rtl.ts](tests/setup/rtl.ts) — imports
+  `@testing-library/jest-dom/vitest`.
+- [tests/rides/RequestForm.test.tsx](tests/rides/RequestForm.test.tsx),
+  [tests/rides/StatusCards.test.tsx](tests/rides/StatusCards.test.tsx),
+  [tests/rides/mapTripMates.test.ts](tests/rides/mapTripMates.test.ts) — see
+  Verification below for what each covers.
+- `package.json`: added `@testing-library/react`, `@testing-library/jest-dom`,
+  `@testing-library/user-event`, `jsdom` as dev dependencies; added `test`
+  (all vitest files) and `test:components` (`tests/rides` only) scripts.
+  `test:rls` untouched.
+
+**RLS gap found and closed (flagging per CLAUDE.md):** Prompt #2's RLS,
+as written, couldn't actually support what Prompt #4 asks for:
+
+- `trips` had **no SELECT policy for requesters at all** — only drivers and
+  admins could read a `trips` row, so a requester had no way to fetch their
+  own assigned trip's `scheduled_time`.
+- The existing "requesters can select trip-mates' ride_requests" policy
+  (via `shares_trip_with`) matches on _any_ shared trip across _both_ legs,
+  not the specific leg being displayed — using it directly would either
+  under-scope (can't tell which leg a visible trip-mate row belongs to) or
+  over-expose (their other leg's flight details, which they only see because
+  of unrelated trip overlap). And `trip_riders` SELECT is restricted to rows
+  tied to the caller's _own_ `ride_request_id`, so it can't be queried to
+  enumerate _other_ riders on a trip at all — confirmed by trying the literal
+  "query trip_riders joined to ride_requests" approach the prompt describes
+  and watching RLS filter it down to just the caller's own row.
+
+  Fixed both with [supabase/migrations/20260821000000_requester_trip_visibility.sql](supabase/migrations/20260821000000_requester_trip_visibility.sql):
+  a `requesters can select trips they're riding on` SELECT policy on
+  `trips`, and a `trip_mates_for_leg(trip_id, leg)` SECURITY DEFINER
+  function (same pattern as Prompt #2's `shares_trip_with`/`is_admin`) that
+  returns only _names_ (not full `ride_requests` rows) for riders/companions
+  on one specific trip+leg, and only if the caller is themselves confirmed
+  on that exact trip+leg. This is narrower than the existing ride_requests
+  trip-mate policy, not a replacement for it.
+  - **First version of the `trips` policy caused infinite recursion**
+    (`infinite recursion detected in policy for relation "trips"`, caught by
+    the existing anonymous-access RLS test): a plain EXISTS subquery against
+    `trip_riders` re-triggers `trip_riders`' own SELECT policies, which query
+    `trips` via `owns_driver`, which re-triggers the policy under test,
+    forever. Fixed by wrapping it in a new SECURITY DEFINER function
+    (`rides_on_trip`), same fix pattern Prompt #2 already used for
+    `shares_trip_with`/`is_admin` and for the same reason.
+  - Added RLS test coverage for both the new policy and the new RPC to
+    [tests/rls.test.ts](tests/rls.test.ts) (trip-mates can select the shared
+    trip, a non-member can't; `trip_mates_for_leg` returns the right rider
+    for a member and nothing for a non-member) — this is schema/security
+    surface, so per CLAUDE.md's testing strategy it belongs in the
+    non-negotiable RLS tier, not left to the component tests.
+
+**Assumptions made:**
+
+- **All five request-form fields are required** (airport, arrival
+  flight+datetime, departure flight+datetime) — the prompt lists these as
+  "the form" without saying any are optional. Went with "collect both legs
+  up front" rather than "let a requester submit with only one leg filled
+  in," since CLAUDE.md's testing requirement ("the request form validates
+  required fields before submit") reads as expecting a real required-field
+  set to test against. Flagging in case some attendees only need one leg
+  and should be able to submit a partial request.
+- **Companions are optional** and blank-named companion fields are silently
+  dropped on submit (trimmed, filtered) rather than blocking submission —
+  the prompt frames this as an "add if needed" field, not a required one.
+- **Trip-mates list only shows _other_ riders**, not the requester
+  themselves — `mapTripMates` explicitly excludes the caller's own
+  `ride_request_id` from the RPC result. "List the other riders" in the
+  prompt read as excluding self.
+- **No edit/resubmit flow** — once a `ride_requests` row exists, the page
+  always shows `StatusCards`, with no way to go back and change flight
+  details from the UI. Not mentioned in the prompt; flagging as a likely
+  future need (e.g. a flight delay).
+
+**Left as placeholder / open questions:**
+
+- No `/status` route was added — folded into `/request` per the prompt's
+  explicit "or fold into /request once submitted" option. If a dedicated
+  `/status` URL is wanted later (e.g. to link to from a confirmation email),
+  it'd just be a thin route around the same `getMyRideStatus` query.
+- `RequestForm`'s date/time inputs are plain `<input type="datetime-local">`
+  with no timezone selector — submitted as `new Date(value).toISOString()`,
+  i.e. interpreted in the browser's local timezone. Fine for a single-city
+  conference audience but worth flagging if riders are expected to enter
+  flight times while still in a different timezone.
+- The new `trip_mates_for_leg` RPC's authorization check (`exists (select 1
+from trip_riders mine join ride_requests my_rr ...)`) duplicates the shape
+  of `rides_on_trip`/`shares_trip_with`; didn't consolidate into one shared
+  helper since the two check slightly different things (leg-specific vs.
+  leg-agnostic) and the RLS helper functions in Prompt #2 were already kept
+  one-purpose-each rather than parameterized.
+
+**Verification:**
+
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests vitest.config.ts` — clean.
+- `npx prettier --check` — clean on all files touched by this prompt.
+- `npm run build` — production build (client + SSR) succeeds.
+- `supabase db reset` (applies both migrations cleanly from scratch) →
+  `npm run test:rls`: **11/11 passed** (9 from Prompt #2 + 2 new for this
+  prompt's RLS fix), confirming the recursion bug is actually fixed and
+  the old scenarios still hold.
+- `npx vitest run` (`tests/rides/*`): **9/9 passed** —
+  `RequestForm.test.tsx`: required-field validation blocks submit and shows
+  per-field errors; a fully-filled form calls `createRideRequest` with the
+  right payload; adding/removing a companion field works (typed value is
+  gone after removal, remaining field re-indexes correctly).
+  `StatusCards.test.tsx`: unconfirmed legs show "Still needs a ride" and no
+  "Ride confirmed" anywhere; a confirmed leg shows "Ride confirmed" +
+  trip-mate name + trip-mate's companion name, while the _other_, still
+  unconfirmed leg correctly still shows "Still needs a ride" next to it (i.e.
+  the two cards render independently); a confirmed leg with an empty
+  trip-mates array renders no "Riding with" section at all.
+  `mapTripMates.test.ts`: given a raw RPC row set, correctly excludes the
+  caller's own `ride_request_id`, maps the remaining rows to the UI shape,
+  and defaults a `null` `companion_names` to `[]` — this is the "right
+  people, no extra broadening query" coverage CLAUDE.md's testing strategy
+  asks for; it's a pure-function test specifically so it doesn't depend on
+  mocking Supabase/cookies to exercise the exclusion logic.
+- Live-checked in a real browser via the preview tool against the local
+  Supabase stack, signed in as the seeded dev requester
+  (`npm run seed:dev`):
+  - Fresh account with no `ride_requests` row → sees `RequestForm`; filled
+    in airport/flights/dates + one companion, submitted, page re-rendered
+    as `StatusCards` with both legs "Still needs a ride" (confirmed the
+    `getMyRideStatus` query invalidation on submit works).
+  - Manually confirmed the arrival leg via direct SQL (inserted a
+    `trips`/`trip_riders` row, matching what the driver flow will do once
+    built) → reloaded `/request` → arrival card correctly flipped to "Ride
+    confirmed" with the scheduled time, departure card stayed "Still needs a
+    ride" independently.
+  - Added a second rider (the seeded admin account, itself given a
+    `ride_requests` row + companion) to the same trip/leg via SQL → reloaded
+    → arrival card's "Riding with" list correctly showed that rider's name
+    and their companion's name, confirming `trip_mates_for_leg` and the UI
+    wiring work end-to-end, not just against mocked data. Test fixture rows
+    were deleted afterward and `supabase db reset` re-run to leave the local
+    DB clean for the next session.
+
+## Prompt #4.5: Allow partial ride requests + edit flow
+
+**Scope:** Two changes to the Prompt #4 requester flow: (1) a `ride_requests`
+row can now have only one leg filled in (arrival OR departure, not both
+required), with a new "Not requested" status-card state distinct from
+"Still needs a ride"; (2) an edit flow that reuses `RequestForm` in an "edit"
+mode to update an existing request (airport, both legs, companions),
+including a warning banner when editing a leg a driver is already assigned
+to. No driver/admin dashboard changes.
+
+**Routes/files/components introduced or changed:**
+
+- [supabase/migrations/20260822000000_ride_companions_delete.sql](supabase/migrations/20260822000000_ride_companions_delete.sql)
+  — see "RLS gap" below.
+- [src/lib/rides/types.ts](src/lib/rides/types.ts) — added `LegStatus.requested`
+  (distinct from `confirmed`): true once a leg's flight+time are both set,
+  regardless of whether a driver has been assigned yet.
+- [src/lib/rides/server-functions.ts](src/lib/rides/server-functions.ts) —
+  `getMyRideStatus` now computes `requested` per leg (`arrival_flight !==
+null && arrival_time !== null`, same for departure) and threads it through
+  `loadLegStatus`. `CreateRideRequestInput` was replaced by
+  `RideRequestFormInput`, shared between create and update, with
+  `arrivalFlight`/`arrivalTime`/`departureFlight`/`departureTime` all
+  `string | null` (a leg is only non-null as a matched pair). Added
+  `updateRideRequest` (POST: updates the caller's existing `ride_requests`
+  row by `person_id`, deliberately does not touch `trip_riders`/`trips` even
+  if a leg being edited is already confirmed - see the prompt's explicit "no
+  reassignment logic" instruction). Added `replaceCompanions` (delete-all,
+  then re-insert non-blank names), used by both `createRideRequest` (was a
+  no-op insert-if-any-names before, functionally unchanged) and the new
+  `updateRideRequest`.
+- [src/components/rides/RequestForm.tsx](src/components/rides/RequestForm.tsx)
+  — reworked substantially:
+  - `legFillState(flight, time)` classifies each leg as `empty` / `partial`
+    / `complete`; validation now only errors on `partial` (mismatched
+    pair) or on both legs being `empty` (form-level "Add at least one leg"
+    error) — airport is still unconditionally required.
+  - New `mode`/`initialData`/`confirmedLegs`/`focusLeg`/`onSuccess`/
+    `onCancel` props. `mode: 'edit'` prefills all fields from `initialData`,
+    calls `updateRideRequest` instead of `createRideRequest`, renders a
+    "Cancel" button, and shows the warning banner
+    ("A driver is already assigned to this leg...") above whichever
+    fieldset(s) `confirmedLegs` marks true.
+  - `focusLeg` autofocuses that leg's flight-number input on mount (used
+    when entering edit mode from a "Not requested" leg's "+ Add this leg"
+    action, so the requester lands on the field they meant to fill in).
+- [src/components/rides/StatusCards.tsx](src/components/rides/StatusCards.tsx)
+  — `LegCard` now has three states instead of two: `confirmed` → "Ride
+  confirmed" (unchanged), `requested && !confirmed` → "Still needs a ride"
+  (unchanged), `!requested` → new "Not requested" state with a "+ Add this
+  leg" button. Added an "Edit request" button (`onEditRequest`) above both
+  cards.
+- [src/routes/request.tsx](src/routes/request.tsx) — now owns `isEditing`/
+  `focusLeg` state and switches between `StatusCards` and `RequestForm
+mode="edit"`. Added `toDatetimeLocalValue()` (ISO → the browser-local
+  `yyyy-MM-ddTHH:mm` string `<input type="datetime-local">` expects - not
+  the same as `toISOString()`, which is UTC) and `toInitialData()` to build
+  `RequestForm`'s `initialData` from `getMyRideStatus`'s result.
+
+**RLS gap found and closed (flagging per CLAUDE.md, same pattern as Prompt
+#4's fix):** `ride_companions` had SELECT/INSERT/UPDATE policies from
+Prompt #2 but **no DELETE policy at all**. The table-level GRANT already
+covers DELETE for `authenticated`, but RLS defaults to denying any operation
+without an explicit permissive policy, so removing a companion during edit
+would have silently deleted zero rows. Added
+[supabase/migrations/20260822000000_ride_companions_delete.sql](supabase/migrations/20260822000000_ride_companions_delete.sql):
+an owner-only DELETE policy, matching the existing owner
+INSERT/UPDATE policies on the same table exactly. Added RLS test coverage:
+requester A can delete their own companion; the same delete against B's
+companion matches zero rows (confirmed both via the delete response's
+`count` and by re-selecting the row with the service-role client).
+
+**Migration check per the prompt's explicit instruction:** confirmed
+`ride_requests.arrival_flight` / `arrival_time` / `departure_flight` /
+`departure_time` were already nullable in Prompt #2's original migration (no
+`not null` constraint) — no schema change needed for partial requests
+themselves, only the `ride_companions` DELETE gap above.
+
+**Assumptions made:**
+
+- **A leg counts as "requested" only when both flight and time are
+  non-null** (`arrivalRequested = arrival_flight !== null && arrival_time
+!== null`), not "either one." Since `RequestForm` only ever submits a leg
+  as a matched pair (both-null or both-filled), these should never
+  disagree in practice; used the stricter AND so a hypothetical
+  direct-DB edit leaving one field null doesn't get miscounted as
+  "requested."
+- **Companion edits are a full replace, not a diff** (delete all existing,
+  re-insert the current list) rather than tracking companion ids through
+  the form — the repeatable-field UI Prompt #4 built only ever tracked
+  companions as a flat name list with no ids, and the prompt says to reuse
+  that UI rather than rebuild it. Flagging in case a future prompt wants
+  companion identity preserved across edits (e.g. per-companion trip
+  assignment) — this replace-based approach doesn't preserve any companion
+  `id` across a save.
+- **"Add this leg" and "Edit request" open the same form/mode** — both set
+  `isEditing = true`; "Add this leg" additionally passes `focusLeg` so the
+  requester's cursor lands on the leg they clicked, but the form itself
+  doesn't have a separate reduced "just this leg" view. Simpler than
+  building two different edit surfaces, and the prompt's wording ("routes
+  into the edit flow below, pre-filling just that leg") reads as compatible
+  with this — the _other_ leg's existing data is preserved either way,
+  which is the part that actually matters.
+- **The warning banner is per-leg-fieldset, not a single page-level
+  banner** — shown above the Arrival fieldset when `confirmedLegs.arrival`
+  is true, and independently above Departure when `confirmedLegs.departure`
+  is true, so a request with only one confirmed leg doesn't show a
+  misleading blanket warning next to the unconfirmed leg's fields.
+- **No confirmation step before submitting a change to a confirmed leg** —
+  the warning banner is informational only; saving still goes through in
+  one click, per the prompt's explicit "simple for MVP" instruction.
+
+**Left as placeholder / open questions:**
+
+- Editing a confirmed leg's time doesn't do anything beyond the warning —
+  no driver notification, no visible "you changed this after confirmation"
+  marker on the driver/admin side (those dashboards don't exist yet). Purely
+  informational per the prompt's instruction not to build reassignment
+  logic.
+- No character/format validation on flight numbers beyond "non-empty" —
+  unchanged from Prompt #4, not in scope for this prompt either.
+- `RequestForm`'s `focusLeg` only autofocuses on mount; if a requester is
+  already mid-edit and clicks a different "Add this leg" entry point (not
+  currently possible from the UI, since `StatusCards` isn't rendered while
+  editing), it wouldn't re-focus. Not reachable through the current UI, so
+  left as-is rather than adding an effect dependency for a state that can't
+  occur.
+
+**Verification:**
+
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests vitest.config.ts` — clean.
+- `npx prettier --check` — clean on all files touched by this prompt.
+- `npm run build` — production build (client + SSR) succeeds.
+- `supabase db reset` (applies all three migrations cleanly from scratch) →
+  `npm run test:rls`: **12/12 passed** (11 from Prompts #2/#4 + 1 new for
+  the `ride_companions` DELETE policy).
+- `npx vitest run` (`tests/rides/*`): **18/18 passed** (up from 9) —
+  `RequestForm.test.tsx`: airport + "at least one leg" required when
+  nothing is filled in; a partially-filled leg (flight without a
+  date/time) is flagged as incomplete rather than silently accepted or
+  silently dropped; submitting with only one leg filled succeeds and sends
+  the other leg's fields as `null`; both-legs-filled still works; companion
+  add/remove unchanged from Prompt #4; edit-mode prefill from
+  `initialData` + changing a value + submit calls `updateRideRequest` (not
+  `createRideRequest`) with the updated payload and fires `onSuccess`;
+  Cancel calls `onCancel`; the confirmed-leg warning banner appears exactly
+  once when only `confirmedLegs.arrival` is true, and not at all when
+  neither leg is confirmed.
+  `StatusCards.test.tsx`: "Not requested" renders (with a working "+ Add
+  this leg" button that calls `onAddLeg` with the correct leg) for legs
+  with no flight info; "Still needs a ride" is shown once a leg is
+  requested but unconfirmed, and is distinguishable from "Not requested" on
+  the _other_ leg rendered alongside it; confirmed-leg rendering (scheduled
+  time, trip-mates) unchanged from Prompt #4; "Edit request" click fires
+  `onEditRequest`.
+- Live-checked in a real browser via the preview tool against the local
+  Supabase stack, signed in as the seeded dev requester:
+  - Submitted a request with only the arrival leg filled in (departure left
+    entirely blank) → correctly landed on `StatusCards` showing Arrival
+    "Still needs a ride" and Departure "Not requested" with a "+ Add this
+    leg" button — confirming partial requests work end-to-end, not just in
+    the mocked component tests.
+  - Clicked "+ Add this leg" on the Departure card → edit form opened with
+    Arrival's existing AA123/date prefilled and the Departure flight-number
+    field auto-focused and empty, exactly as intended → filled in the
+    departure leg and saved → both legs correctly showed "Still needs a
+    ride" afterward.
+  - Confirmed the arrival leg via direct SQL (same pattern as Prompt #4's
+    verification) → reopened "Edit request" → confirmed the warning banner
+    rendered above the Arrival fieldset only, with the Departure fieldset
+    (still unconfirmed) showing no banner, both legs' current values still
+    correctly prefilled from the prior edit → clicked Cancel → returned to
+    `StatusCards` unchanged. Test fixture rows were deleted afterward and
+    `supabase db reset` re-run to leave the local DB clean for the next
+    session.

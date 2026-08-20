@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import './setup/localSupabaseEnv'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -248,6 +250,52 @@ describe('ride_requests: trip-mate visibility', () => {
   })
 })
 
+describe('ride_companions: owner delete (Prompt #4.5)', () => {
+  it("requester A can delete their own companion, but not a companion on B's ride_requests row", async () => {
+    const { data: ownCompanion, error: ownInsertErr } = await admin
+      .from('ride_companions')
+      .insert({ ride_request_id: rrA, name: 'A Companion' })
+      .select()
+      .single()
+    expect(ownInsertErr).toBeNull()
+
+    const { data: othersCompanion, error: othersInsertErr } = await admin
+      .from('ride_companions')
+      .insert({ ride_request_id: rrB, name: 'B Companion' })
+      .select()
+      .single()
+    expect(othersInsertErr).toBeNull()
+
+    const { error: deleteOthersErr, count: deleteOthersCount } =
+      await requesterA.client
+        .from('ride_companions')
+        .delete({ count: 'exact' })
+        .eq('id', othersCompanion!.id)
+    expect(deleteOthersErr).toBeNull()
+    expect(deleteOthersCount).toBe(0)
+
+    const { data: othersStillThere } = await admin
+      .from('ride_companions')
+      .select('id')
+      .eq('id', othersCompanion!.id)
+    expect(othersStillThere).toHaveLength(1)
+
+    const { error: deleteOwnErr, count: deleteOwnCount } =
+      await requesterA.client
+        .from('ride_companions')
+        .delete({ count: 'exact' })
+        .eq('id', ownCompanion!.id)
+    expect(deleteOwnErr).toBeNull()
+    expect(deleteOwnCount).toBe(1)
+
+    const { data: ownGone } = await admin
+      .from('ride_companions')
+      .select('id')
+      .eq('id', ownCompanion!.id)
+    expect(ownGone).toHaveLength(0)
+  })
+})
+
 describe('drivers', () => {
   it('driver D can select all ride_requests regardless of trip membership', async () => {
     const { data, error } = await driverD.client
@@ -331,6 +379,50 @@ describe('drivers', () => {
       .eq('id', otherTrip!.id)
       .single()
     expect(verifyUnchanged?.status).toBe('open')
+  })
+})
+
+describe('trips: requester visibility (Prompt #4)', () => {
+  it('trip-mates A and B can select the shared arrival trip, but C (no shared trip) cannot', async () => {
+    const { data: aSeesTrip, error: aErr } = await requesterA.client
+      .from('trips')
+      .select('*')
+      .eq('id', sharedTripId)
+    expect(aErr).toBeNull()
+    expect(aSeesTrip).toHaveLength(1)
+
+    const { data: bSeesTrip, error: bErr } = await requesterB.client
+      .from('trips')
+      .select('*')
+      .eq('id', sharedTripId)
+    expect(bErr).toBeNull()
+    expect(bSeesTrip).toHaveLength(1)
+
+    const { data: cSeesTrip, error: cErr } = await requesterC.client
+      .from('trips')
+      .select('*')
+      .eq('id', sharedTripId)
+    expect(cErr).toBeNull()
+    expect(cSeesTrip).toHaveLength(0)
+  })
+
+  it('trip_mates_for_leg returns the other rider on the shared leg, and nothing for a non-member', async () => {
+    const { data: aMates, error: aErr } = await requesterA.client.rpc(
+      'trip_mates_for_leg',
+      { p_trip_id: sharedTripId, p_leg: 'arrival' },
+    )
+    expect(aErr).toBeNull()
+    const aMateIds =
+      aMates?.map((m: { ride_request_id: string }) => m.ride_request_id) ?? []
+    expect(aMateIds).toEqual(expect.arrayContaining([rrA, rrB]))
+    expect(aMateIds).not.toContain(rrC)
+
+    const { data: cMates, error: cErr } = await requesterC.client.rpc(
+      'trip_mates_for_leg',
+      { p_trip_id: sharedTripId, p_leg: 'arrival' },
+    )
+    expect(cErr).toBeNull()
+    expect(cMates).toHaveLength(0)
   })
 })
 
