@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Geist Sans";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  --color-background: #ffffff;
+  --color-cloud: #f5f8fc;
+  --color-navy: #031227;
+  --color-navy-soft: #0a2345;
+  --color-ink: #07152e;
+  --color-muted: #5f6e83;
+  --color-line: #dce5f0;
+  --color-blue: #0868f7;
+  --color-blue-dark: #0056d8;
+  --color-green: #079455;
+
+  --font-sans:
+    "Geist Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-ink);
+}
