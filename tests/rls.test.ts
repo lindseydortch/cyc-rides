@@ -382,6 +382,120 @@ describe('drivers', () => {
   })
 })
 
+describe('driver trip flow (Prompt #5)', () => {
+  it('unclaimed_ride_requests returns a fully-requested unclaimed leg to a driver, hides it once claimed, and returns nothing to a non-driver', async () => {
+    const requesterF = await createTestUser('requester-f@rls-test.cycrides.dev')
+    userIdsToCleanUp.push(requesterF)
+    await admin
+      .from('people')
+      .update({ role: 'requester', name: 'Requester F' })
+      .eq('id', requesterF.id)
+
+    const arrivalTime = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    const { data: rrFData, error: rrFErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterF.id,
+        airport: 'DFW',
+        arrival_flight: 'UA500',
+        arrival_time: arrivalTime,
+      })
+      .select()
+      .single()
+    expect(rrFErr).toBeNull()
+    const rrF: string = rrFData.id
+
+    const { data: tripRow, error: tripErr } = await admin
+      .from('trips')
+      .insert({
+        driver_id: driverRowId,
+        airport: 'DFW',
+        direction: 'arrival',
+        scheduled_time: arrivalTime,
+      })
+      .select()
+      .single()
+    expect(tripErr).toBeNull()
+    const tripId: string = tripRow.id
+
+    // Driver D sees requester F as an unclaimed candidate.
+    const { data: candidatesBefore, error: candidatesBeforeErr } =
+      await driverD.client.rpc('unclaimed_ride_requests', {
+        p_airport: 'DFW',
+        p_direction: 'arrival',
+        p_reference_time: arrivalTime,
+      })
+    expect(candidatesBeforeErr).toBeNull()
+    const idsBefore =
+      candidatesBefore?.map(
+        (c: { ride_request_id: string }) => c.ride_request_id,
+      ) ?? []
+    expect(idsBefore).toContain(rrF)
+
+    // A plain requester (not a driver) gets nothing back, not an error.
+    const { data: candidatesForRequester, error: candidatesForRequesterErr } =
+      await requesterA.client.rpc('unclaimed_ride_requests', {
+        p_airport: 'DFW',
+        p_direction: 'arrival',
+        p_reference_time: arrivalTime,
+      })
+    expect(candidatesForRequesterErr).toBeNull()
+    expect(candidatesForRequester).toHaveLength(0)
+
+    // Driver D claims requester F: insert trip_riders + flip the confirmed
+    // flag, exactly like the app's addTripRiders server function does.
+    const { error: insertRiderErr } = await driverD.client
+      .from('trip_riders')
+      .insert({ trip_id: tripId, ride_request_id: rrF, leg: 'arrival' })
+    expect(insertRiderErr).toBeNull()
+
+    const { data: confirmResult, error: confirmErr } = await driverD.client
+      .from('ride_requests')
+      .update({ arrival_ride_confirmed: true })
+      .eq('id', rrF)
+      .select()
+    expect(confirmErr).toBeNull()
+    expect(confirmResult?.[0].arrival_ride_confirmed).toBe(true)
+
+    // Now claimed - no longer an unclaimed candidate.
+    const { data: candidatesAfter, error: candidatesAfterErr } =
+      await driverD.client.rpc('unclaimed_ride_requests', {
+        p_airport: 'DFW',
+        p_direction: 'arrival',
+        p_reference_time: arrivalTime,
+      })
+    expect(candidatesAfterErr).toBeNull()
+    const idsAfter =
+      candidatesAfter?.map(
+        (c: { ride_request_id: string }) => c.ride_request_id,
+      ) ?? []
+    expect(idsAfter).not.toContain(rrF)
+
+    // driver_trip_riders() surfaces the claimed rider's name/flight/time for
+    // this trip, scoped to driver D's own trips.
+    const { data: tripRiders, error: tripRidersErr } =
+      await driverD.client.rpc('driver_trip_riders')
+    expect(tripRidersErr).toBeNull()
+    const thisTripRider = tripRiders?.find(
+      (r: { trip_id: string; ride_request_id: string }) =>
+        r.trip_id === tripId && r.ride_request_id === rrF,
+    )
+    expect(thisTripRider).toMatchObject({
+      person_name: 'Requester F',
+      flight: 'UA500',
+    })
+    expect(new Date(thisTripRider.flight_time).getTime()).toBe(
+      new Date(arrivalTime).getTime(),
+    )
+
+    // A non-driver caller sees nothing from driver_trip_riders() either.
+    const { data: tripRidersForRequester, error: tripRidersForRequesterErr } =
+      await requesterA.client.rpc('driver_trip_riders')
+    expect(tripRidersForRequesterErr).toBeNull()
+    expect(tripRidersForRequester).toHaveLength(0)
+  })
+})
+
 describe('trips: requester visibility (Prompt #4)', () => {
   it('trip-mates A and B can select the shared arrival trip, but C (no shared trip) cannot', async () => {
     const { data: aSeesTrip, error: aErr } = await requesterA.client

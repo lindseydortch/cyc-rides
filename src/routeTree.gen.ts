@@ -16,6 +16,9 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as RequestRouteImport } from './routes/request'
 import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
+import { Route as DriverIndexRouteImport } from './routes/driver.index'
+import { Route as DriverTripsTripIdRouteImport } from './routes/driver.trips.$tripId'
+import { Route as DriverTripsNewRouteImport } from './routes/driver.trips.new'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -52,34 +55,57 @@ const AuthCallbackRoute = AuthCallbackRouteImport.update({
   path: '/auth/callback',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DriverIndexRoute = DriverIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverTripsTripIdRoute = DriverTripsTripIdRouteImport.update({
+  id: '/trips/$tripId',
+  path: '/trips/$tripId',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverTripsNewRoute = DriverTripsNewRouteImport.update({
+  id: '/trips/new',
+  path: '/trips/new',
+  getParentRoute: () => DriverRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
-  '/driver': typeof DriverRoute
+  '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/request': typeof RequestRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/driver/': typeof DriverIndexRoute
+  '/driver/trips/$tripId': typeof DriverTripsTripIdRoute
+  '/driver/trips/new': typeof DriverTripsNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
-  '/driver': typeof DriverRoute
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/request': typeof RequestRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/driver': typeof DriverIndexRoute
+  '/driver/trips/$tripId': typeof DriverTripsTripIdRoute
+  '/driver/trips/new': typeof DriverTripsNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
-  '/driver': typeof DriverRoute
+  '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/request': typeof RequestRoute
   '/auth/callback': typeof AuthCallbackRoute
+  '/driver/': typeof DriverIndexRoute
+  '/driver/trips/$tripId': typeof DriverTripsTripIdRoute
+  '/driver/trips/new': typeof DriverTripsNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -91,15 +117,20 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/request'
     | '/auth/callback'
+    | '/driver/'
+    | '/driver/trips/$tripId'
+    | '/driver/trips/new'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/admin'
-    | '/driver'
     | '/login'
     | '/onboarding'
     | '/request'
     | '/auth/callback'
+    | '/driver'
+    | '/driver/trips/$tripId'
+    | '/driver/trips/new'
   id:
     | '__root__'
     | '/'
@@ -109,12 +140,15 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/request'
     | '/auth/callback'
+    | '/driver/'
+    | '/driver/trips/$tripId'
+    | '/driver/trips/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
-  DriverRoute: typeof DriverRoute
+  DriverRoute: typeof DriverRouteWithChildren
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRoute
   RequestRoute: typeof RequestRoute
@@ -172,13 +206,49 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/driver/': {
+      id: '/driver/'
+      path: '/'
+      fullPath: '/driver/'
+      preLoaderRoute: typeof DriverIndexRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/trips/$tripId': {
+      id: '/driver/trips/$tripId'
+      path: '/trips/$tripId'
+      fullPath: '/driver/trips/$tripId'
+      preLoaderRoute: typeof DriverTripsTripIdRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/trips/new': {
+      id: '/driver/trips/new'
+      path: '/trips/new'
+      fullPath: '/driver/trips/new'
+      preLoaderRoute: typeof DriverTripsNewRouteImport
+      parentRoute: typeof DriverRoute
+    }
   }
 }
+
+interface DriverRouteChildren {
+  DriverIndexRoute: typeof DriverIndexRoute
+  DriverTripsTripIdRoute: typeof DriverTripsTripIdRoute
+  DriverTripsNewRoute: typeof DriverTripsNewRoute
+}
+
+const DriverRouteChildren: DriverRouteChildren = {
+  DriverIndexRoute: DriverIndexRoute,
+  DriverTripsTripIdRoute: DriverTripsTripIdRoute,
+  DriverTripsNewRoute: DriverTripsNewRoute,
+}
+
+const DriverRouteWithChildren =
+  DriverRoute._addFileChildren(DriverRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
-  DriverRoute: DriverRoute,
+  DriverRoute: DriverRouteWithChildren,
   LoginRoute: LoginRoute,
   OnboardingRoute: OnboardingRoute,
   RequestRoute: RequestRoute,

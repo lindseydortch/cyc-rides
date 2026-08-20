@@ -845,3 +845,226 @@ themselves, only the `ride_companions` DELETE gap above.
     `StatusCards` unchanged. Test fixture rows were deleted afterward and
     `supabase db reset` re-run to leave the local DB clean for the next
     session.
+
+## Prompt #5: Driver flow
+
+**Scope:** The driver-facing `/driver` dashboard, `/driver/trips/new` (create
+a trip), and `/driver/trips/:tripId` (add riders + mark complete), plus a
+role-specific route guard on top of Prompt #3's "signed in + has a role"
+guards. No requester/admin changes beyond the RLS/RPC additions this flow
+needed.
+
+**Routes/files/components introduced:**
+
+- [src/lib/auth/route-guards.ts](src/lib/auth/route-guards.ts) —
+  `requireDriverSession()`: calls `requireOnboardedSession()`, then redirects
+  to `homeRouteForPerson(person)` if `role !== 'driver'` and `!is_admin`.
+  Used by the `/driver` layout route only (its children inherit the guard
+  via TanStack Router's parent `beforeLoad`, so they don't call it again).
+- [supabase/migrations/20260823000000_driver_trip_flow.sql](supabase/migrations/20260823000000_driver_trip_flow.sql)
+  — see "RLS/RPC gaps" below.
+- [src/lib/driver/types.ts](src/lib/driver/types.ts) — `Trip`, `TripRider`,
+  `DriverCapacity`, `DriverTripsOverview`, `RideCandidate`, `TripDetail`.
+- [src/lib/driver/query-keys.ts](src/lib/driver/query-keys.ts) —
+  `driverTripsQueryKey`, `driverTripDetailQueryKey(tripId)`.
+- [src/lib/driver/server-functions.ts](src/lib/driver/server-functions.ts) —
+  `getMyDriverTrips` (GET: own trips grouped by `status`, each with its
+  riders via the new `driver_trip_riders` RPC), `createTrip` (POST: inserts
+  into `trips` with `driver_id` from the caller's own `drivers` row),
+  `getTripDetail` (GET: one trip + its current riders + unclaimed candidates
+  via the new `unclaimed_ride_requests` RPC, skipped for a completed trip),
+  `addTripRiders` (POST: inserts `trip_riders` rows + flips the leg-correct
+  `ride_requests` confirmed flag), `completeTrip` (POST: sets
+  `trips.status = 'completed'`). Also exports four pure helpers pulled out
+  specifically for direct unit-test coverage without a real Supabase/cookie
+  context, same reasoning as Prompt #4's `mapTripMates`: `ridersForTrip`
+  (groups the RPC's flat rows by trip), `buildTripInsert` (driver_id +
+  form fields → insert payload), `confirmedColumnForLeg` (leg →
+  `arrival_ride_confirmed`/`departure_ride_confirmed`), `buildTripRiderInserts`
+  (selected ids → `trip_riders` insert rows).
+- [src/components/driver/TripForm.tsx](src/components/driver/TripForm.tsx),
+  [AddRidersForm.tsx](src/components/driver/AddRidersForm.tsx),
+  [CompleteTripButton.tsx](src/components/driver/CompleteTripButton.tsx),
+  [DriverTripCard.tsx](src/components/driver/DriverTripCard.tsx) — presentational
+  components, each owning its own mutation (`useMutation`), matching the
+  RequestForm/StatusCards split from Prompt #4.
+- [src/routes/driver.tsx](src/routes/driver.tsx) — now a **pathless layout**
+  (`beforeLoad` + `<Outlet />` only); the actual dashboard moved to
+  [src/routes/driver.index.tsx](src/routes/driver.index.tsx). See "layout
+  restructure" below for why.
+- [src/routes/driver.trips.new.tsx](src/routes/driver.trips.new.tsx),
+  [src/routes/driver.trips.$tripId.tsx](src/routes/driver.trips.$tripId.tsx)
+  — the create-trip and trip-detail/add-riders pages, both children of the
+  `/driver` layout (no `beforeLoad` of their own).
+- [package.json](package.json) — `test:components` now also runs
+  `tests/driver`.
+
+**RLS/RPC gaps found and closed (flagging per CLAUDE.md, same pattern as
+Prompts #4/#4.5):** the existing RLS from Prompts #2/#4 couldn't support what
+this prompt asks for:
+
+- **No policy let a driver UPDATE a `ride_requests` row they don't own** —
+  needed to flip `arrival_ride_confirmed`/`departure_ride_confirmed` when
+  claiming a rider. Added a broad "drivers can update ride_requests" policy
+  (any driver, any row/column), matching the same MVP-simplicity precedent
+  already set by Prompt #2's "drivers can select all ride_requests" and
+  "authenticated users can select all drivers" - not scoped to "only the
+  leg/columns being confirmed."
+- **Reading rider names requires joining `people`**, which drivers have no
+  SELECT policy for beyond their own row - same gap Prompt #4 hit for
+  trip-mates. Fixed the same way (a narrow `SECURITY DEFINER` RPC rather than
+  a broad "drivers can select all people" policy): `driver_trip_riders()`
+  returns rider name/companions/flight/flight-time for every trip owned by
+  the caller (via `owns_driver`), and `unclaimed_ride_requests(airport,
+  direction, reference_time)` returns unclaimed candidates for a leg,
+  restricted to callers who own a `drivers` row (a non-driver caller gets
+  zero rows back, not an error), sorted by proximity of flight time to the
+  trip's `scheduled_time`.
+- Added RLS test coverage for both RPCs and the new policy to
+  [tests/rls.test.ts](tests/rls.test.ts): a driver sees a fully-requested
+  unclaimed leg as a candidate, a non-driver gets nothing back from either
+  RPC, claiming a rider (insert `trip_riders` + update the confirmed flag as
+  the app's `addTripRiders` does) removes them from future candidate lists,
+  and `driver_trip_riders()` returns the claimed rider's correct
+  name/flight/time scoped to the calling driver's own trips.
+
+**Layout restructure (flagging - not something the prompt anticipated):**
+`driver.trips.new.tsx` and `driver.trips.$tripId.tsx` are TanStack Router
+children of `/driver` under the flat-file dot convention (same convention
+this project already used for `auth.callback.tsx`, but this is the first time
+a *parent* route file for that prefix also exists). A child route only
+renders inside its parent's `<Outlet />` - the original `driver.tsx` rendered
+full dashboard content with no Outlet, so `/driver/trips/new` would have
+silently rendered nothing. Fixed by moving the dashboard into
+`driver.index.tsx` (the `/driver` index child) and reducing `driver.tsx` to a
+pathless layout (`beforeLoad` + `<Outlet />`). This also let the child routes
+drop their own redundant `requireDriverSession()` call, since the layout's
+`beforeLoad` already covers the whole section - one less auth round-trip per
+navigation within `/driver/*`.
+
+**Build-breaking discovery (flagging - not obvious from any error message):**
+a top-level type alias `type SupabaseServerClient = ReturnType<typeof
+getSupabaseServerClient>` in
+[server-functions.ts](src/lib/driver/server-functions.ts) caused
+`npm run build` to fail with `[import-protection] Import denied in client
+environment` - TanStack Start's client/server code-splitting transform
+apparently doesn't handle a *named* top-level type alias built from
+`typeof <server-only import>` the same way it handles the type expression
+inlined directly in each function's parameter position (which is what
+[rides/server-functions.ts](src/lib/rides/server-functions.ts) already does
+and always has). Bisected by trimming the file down to progressively smaller
+reproductions until isolating this one line; fixed by inlining
+`ReturnType<typeof getSupabaseServerClient>` at each use site instead of a
+named alias. Flagging this as a real footgun for future server-functions
+files in this codebase - stick to the inline form.
+
+**Assumptions made:**
+
+- **Dashboard grouping is "upcoming" = `status = 'open'`, "completed" =
+  `status = 'completed'`** - the schema only has those two states, so
+  "upcoming" isn't actually time-based (a past-dated open trip still shows as
+  upcoming). Matches the schema as given rather than adding an unrequested
+  third state or time-based filtering.
+- **The passenger-capacity "running counter" sums `RideCandidate.partySize`
+  (1 + companion count) for selected candidates; luggage capacity is shown as
+  a static reference number, not a counter** - the schema has no per-request
+  luggage estimate to sum against, only a driver-level `luggage_capacity`
+  total. Interpreted "running counter against passenger_capacity and
+  luggage_capacity" as "show both numbers for reference, but only passengers
+  actually have a per-rider quantity to run a counter against."
+- **`unclaimed_ride_requests` requires both the flight number and time to be
+  set AND the confirmed flag false AND no existing `trip_riders` row for that
+  leg** - the prompt listed all of these explicitly ("where the relevant
+  confirmed flag is false and there's no existing trip_riders row"); using
+  the same both-fields-set definition of "requested" that Prompt #4.5
+  established for `getMyRideStatus`.
+- **A completed trip's detail page skips the `unclaimed_ride_requests` RPC
+  call entirely** (returns an empty candidates list) rather than querying and
+  discarding the result - a completed trip has no "Add riders" section in the
+  UI, so querying for candidates would be wasted work. Not explicitly asked
+  for, but follows from "mark complete" being presented as a terminal state
+  in this MVP (no reopening).
+- **Capacity is informational only, never hard-blocking** - per the prompt's
+  explicit instruction; the submit button only disables on zero-selected, not
+  on over-capacity.
+
+**Left as placeholder / open questions:**
+
+- The "drivers can update ride_requests" policy is as broad as the existing
+  "drivers can select all ride_requests" policy - any driver can flip any
+  ride_request's confirmed flags (or any other column) via a crafted direct
+  API call, not just through the intended add-riders flow. Same tradeoff
+  already accepted elsewhere in this schema; flagging again since this is the
+  first *write* access of that breadth (the earlier ones were read-only).
+- No UI for removing/reassigning a rider from a trip once added, and no way
+  to reopen a completed trip - both are one-way actions in this MVP, matching
+  "don't hard-block... simple for MVP" framing but worth confirming before
+  a real event where flight delays or driver cancellations happen.
+- `unclaimed_ride_requests`'s proximity sort compares against the trip's own
+  `scheduled_time` as the reference - reasonable for "how close is this
+  candidate's flight to when I'm already driving," but if a driver creates a
+  trip with no real plan yet and picks a rough placeholder time, the sort
+  order may not reflect actual usefulness. Not configurable from the UI.
+
+**Verification:**
+
+- `npx tsc --noEmit` - clean.
+- `npx eslint src tests vitest.config.ts` - clean.
+- `npx prettier --check src tests` - clean on all files touched by this
+  prompt (`src/styles.css` was already failing `--check` before this prompt,
+  per Prompt #3's build log entry - untouched, not this prompt's scope).
+- `npm run build` - production build (client + SSR) succeeds, after the
+  type-alias fix described above.
+- `supabase db reset` (applies all four migrations cleanly from scratch,
+  including this prompt's) → `npm run test:rls`: **13/13 passed** (12 from
+  Prompts #2/#4/#4.5 + 1 new scenario covering both new RPCs and the new
+  update policy), run twice for repeatability.
+- `npx vitest run` (`tests/rides/*` + `tests/driver/*`): **46/46 passed**
+  (33 unchanged from Prompt #4.5 + 13 new) -
+  `tripHelpers.test.ts`: `buildTripInsert` uses the given driver id (not
+  anything from the form); `confirmedColumnForLeg` maps arrival/departure to
+  the correct, distinct column; `buildTripRiderInserts` tags every row with
+  the trip's leg; `ridersForTrip` scopes to one trip and defaults null
+  companions to `[]`.
+  `TripForm.test.tsx`: required-field validation; submits
+  airport/direction/scheduledTime as ISO and calls `onSuccess` with the new
+  trip id.
+  `AddRidersForm.test.tsx`: only renders the candidates it's given (the
+  actual airport/direction filtering is server-side, covered by the RLS
+  suite); shows a no-candidates message when empty; the passenger counter
+  updates on select/deselect; submit sends only the selected
+  `rideRequestIds` for the given trip; submit is disabled with nothing
+  selected.
+  `CompleteTripButton.test.tsx`: calls `completeTrip` with the trip id and
+  fires `onCompleted`.
+- Live-checked in a real browser via the preview tool against the local
+  Supabase stack, signed in as the seeded dev driver
+  (`npm run seed:dev`; a fresh `dev-requester` ride request with a full
+  arrival leg was inserted via direct SQL to have a real candidate to claim):
+  - `/driver` with no trips yet showed the empty-state text for both
+    sections; created a DFW/arrival trip via `/driver/trips/new`, which
+    correctly redirected to the new trip's `/driver/trips/:tripId`.
+  - The seeded requester appeared as the only candidate on the add-riders
+    screen (name, flight, flight time, party of 1); selecting them updated
+    the counter to "1 / 4 passengers selected" against the driver's real
+    `passenger_capacity`; submitting moved them into "Current riders" and
+    correctly emptied the candidate list.
+  - Confirmed via direct SQL: `arrival_ride_confirmed` flipped to `true` on
+    the claimed `ride_requests` row, `departure_ride_confirmed` stayed
+    `false`, and the `trip_riders` row was tagged `leg = 'arrival'`.
+  - `/driver` dashboard showed the trip under "Upcoming trips" with the
+    rider's name and flight time; clicking "Mark trip complete" on the trip
+    detail page swapped the button for a "Completed" badge, hid the add-riders
+    section, and the dashboard subsequently listed it under "Completed
+    trips" instead.
+  - Signed in as the seeded dev requester and confirmed their own
+    `/request` page independently showed the arrival leg as "Ride
+    confirmed" with the correct scheduled time - the full request → claim
+    → confirm loop works end-to-end, not just in isolation.
+  - Signed in as the seeded dev requester and confirmed direct navigation to
+    both `/driver` and `/driver/trips/new` redirected back to `/request`
+    (the new role guard), rather than the Prompt #3 guards' "signed in + has
+    a role" check letting them through.
+  - Test fixture rows were deleted afterward and `supabase db reset`
+    re-run (`npm run test:rls` confirmed 13/13 still passing against the
+    clean schema) to leave the local DB clean for the next session.

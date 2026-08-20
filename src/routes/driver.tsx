@@ -1,19 +1,13 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Outlet } from '@tanstack/react-router'
 
-import { requireOnboardedSession } from '#/lib/auth/route-guards'
+import { requireDriverSession } from '#/lib/auth/route-guards'
 
+// Pathless layout for /driver and its sub-routes (trips/new,
+// trips/$tripId) - the guard lives here so it runs once for the whole
+// section, and each child route renders through the Outlet below. The
+// dashboard itself lives in driver.index.tsx (the '/driver' index child),
+// not in this file.
 export const Route = createFileRoute('/driver')({
-  beforeLoad: () => requireOnboardedSession(),
-  component: DriverDashboard,
+  beforeLoad: () => requireDriverSession(),
+  component: () => <Outlet />,
 })
-
-function DriverDashboard() {
-  return (
-    <div className="mx-auto max-w-6xl p-8">
-      <h1 className="text-3xl font-bold text-ink">Driver Dashboard</h1>
-      <p className="mt-4 text-muted">
-        Driver dashboard coming in a later prompt.
-      </p>
-    </div>
-  )
-}

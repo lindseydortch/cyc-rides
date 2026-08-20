@@ -15,7 +15,7 @@
     "check": "prettier --check .",
     "test:rls": "vitest run tests/rls.test.ts",
     "test": "vitest run",
-    "test:components": "vitest run tests/rides",
+    "test:components": "vitest run tests/rides tests/driver",
     "seed:dev": "node scripts/seed-dev-users.ts"
   },
   "dependencies": {
