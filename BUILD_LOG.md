@@ -375,3 +375,98 @@ their Prompt #1 placeholder bodies, just now behind auth.
     question above for what wasn't verifiable without real credentials).
   - No console errors other than a one-time Vite cold-start dep-optimize
     warning on first load (unrelated, resolved itself on reconnect).
+
+## Prompt #3.5: Temporary dev auth bypass (until real LinkedIn OAuth is wired)
+
+**Scope:** A local-dev-only sign-in bypass so `/driver` and `/admin` can be
+exercised against real Supabase sessions (and therefore real RLS) before a
+real LinkedIn OAuth app exists. Purely additive: no changes to RLS policies
+or the Prompt #3 LinkedIn auth code.
+
+**Routes/files/components introduced:**
+- [scripts/seed-dev-users.ts](scripts/seed-dev-users.ts) — one-off seed
+  script, not run automatically. Run it with:
+  ```
+  supabase start   # if not already running
+  npm run seed:dev
+  ```
+  Pulls the local instance's `service_role` key from `supabase status -o
+  env` (same pattern as [tests/setup/localSupabaseEnv.ts](tests/setup/localSupabaseEnv.ts)
+  — never a checked-in secret) and uses the Admin API to create/update three
+  accounts: `dev-requester@example.com` (role `requester`),
+  `dev-driver@example.com` (role `driver`, with a placeholder `drivers`
+  row), `dev-admin@example.com` (role `driver` **and** `is_admin=true`, also
+  with a placeholder `drivers` row, so it can exercise both driver and admin
+  views). Idempotent — re-running detects existing accounts by email,
+  resets their password to the known dev default, and upserts
+  role/`drivers` row, rather than erroring or duplicating.
+- [src/lib/auth/dev-accounts.ts](src/lib/auth/dev-accounts.ts) — the shared
+  source of truth for the three accounts' emails/roles/driver info and the
+  dev password, imported by both the seed script and `/login`, so the two
+  can't drift out of sync.
+- [src/routes/login.tsx](src/routes/login.tsx) — added a dev-only panel
+  below the LinkedIn button, gated on `import.meta.env.DEV` (Vite's
+  build-time constant, statically replaced and dead-code-eliminated in
+  production builds — not a runtime env-var check, so it's structurally
+  impossible for this to ship). Three buttons call
+  `supabase.auth.signInWithPassword()` against the seeded accounts, then
+  navigate to `/` and let the existing role-based redirect (from Prompt #3)
+  take over — same landing behavior as a real login.
+- `package.json`: added a `seed:dev` script (`node
+  scripts/seed-dev-users.ts`). No new dependency — Node 24's built-in
+  TypeScript support runs the `.ts` file directly.
+
+**Assumptions made:**
+- **Visual distinction:** the dev panel is a dashed amber/orange box with a
+  "DEV ONLY — NOT REAL AUTH" warning-icon label and amber-outlined buttons
+  (`Dev: sign in as ___`), placed below and visually separated from the
+  solid blue LinkedIn button — chosen so it reads as clearly non-production
+  even in a cropped screenshot, per the prompt's requirement.
+- **Password reuse across re-seeds:** re-running the seed script resets the
+  seeded accounts' passwords to the same known dev default rather than
+  leaving a possibly-drifted password in place — treated "if they don't
+  already exist" as "get them into a known-good state," since the whole
+  point is a predictable local fixture.
+- **Admin account gets a `drivers` row too** (not just `is_admin=true`),
+  matching the prompt's explicit note that this should "exercise both
+  driver and admin views, matching how the real admin account works" — a
+  real admin who is also a driver would have gone through the driver
+  onboarding form and have a `drivers` row.
+
+**Left as placeholder / open questions:**
+- The seed script's `findUserByEmail` pages through `listUsers()` since the
+  Admin API has no get-by-email lookup — fine at this scale (a handful of
+  local accounts) but would need a different approach if ever reused
+  against an instance with many users.
+- This whole prompt is explicitly temporary — once a real LinkedIn OAuth
+  app is set up (Final step A), the dev panel and seed script can be
+  deleted along with this BUILD_LOG entry's relevance, though nothing
+  requires deleting them (the `import.meta.env.DEV` gate means they're
+  inert in any deployed build regardless).
+
+**Verification:**
+- `npx tsc --noEmit` — clean.
+- `npx eslint src scripts tests` — clean (one
+  `eslint-disable-next-line @typescript-eslint/no-unnecessary-condition` in
+  the seed script, same justification as the existing one in
+  `tests/rls.test.ts` — the Admin API's inferred return type is narrower
+  than its real runtime error shape).
+- `npx prettier --write` — clean.
+- `npm run build` — production build succeeds. Grepped the built
+  `dist/client` and `dist/server` output for `"Dev: sign in"`,
+  `DEV_PASSWORD`, and the seeded email addresses — **zero matches**,
+  confirming the dev panel is fully stripped from production output, not
+  just hidden.
+- `npm run seed:dev` against the local Supabase stack — ran twice
+  (confirmed idempotent: second run reports "already existed" for all
+  three and resets passwords rather than erroring). Verified via direct
+  `psql` query that all three `people` rows and both `drivers` rows
+  (driver, admin) landed with the expected `role`/`is_admin`/vehicle values.
+- Live-checked in a real browser via the preview tool: `/login` renders the
+  dashed amber dev panel below the LinkedIn button; clicking "Dev: sign in
+  as Driver" signs in with a real Supabase session and lands on `/driver`
+  with the nav showing "Dev Driver"/"DD" (real session data, not a
+  placeholder); "Log out" correctly clears the session and redirects back
+  to `/login` (via the existing route guard re-running on `router.invalidate()`,
+  not new logout logic); "Dev: sign in as Admin" lands on `/admin` (correct
+  `is_admin` → `/admin` routing from `homeRouteForPerson`).
