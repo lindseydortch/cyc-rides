@@ -1068,3 +1068,292 @@ files in this codebase - stick to the inline form.
   - Test fixture rows were deleted afterward and `supabase db reset`
     re-run (`npm run test:rls` confirmed 13/13 still passing against the
     clean schema) to leave the local DB clean for the next session.
+
+## Prompt #5.5: Tighten driver write access, add un-claim + reopen
+
+**Scope:** Two changes to the Prompt #5 driver flow: (1) replaced the broad
+"drivers can update ride_requests" RLS policy with three SECURITY DEFINER
+RPCs (`claim_trip_riders`, `unclaim_trip_rider`, `reopen_trip`), and rewrote
+`addTripRiders` to call the first one instead of doing a direct insert+
+update; (2) added a "Remove" button per current rider and a "Reopen trip"
+button on a completed trip's detail page. No requester/admin changes.
+
+**Routes/files/components introduced or changed:**
+
+- [supabase/migrations/20260824000000_driver_write_tightening.sql](supabase/migrations/20260824000000_driver_write_tightening.sql)
+  — the three new RPCs and the `drop policy "drivers can update
+  ride_requests"` statement. Each RPC does its own ownership check
+  (`owns_driver(trips.driver_id)`, or `owns_driver(...) or is_admin()` for
+  `reopen_trip`) and raises an exception (not a silent no-op) when the
+  caller doesn't own the trip - a rejected RPC call surfaces as a normal
+  Supabase `error`, same shape as any other RPC failure the app already
+  handles with `if (error) throw error`. `claim_trip_riders` additionally
+  checks `status = 'open'` before claiming, since driver writes to
+  ride_requests should never happen against a trip that isn't accepting
+  riders. All three are plpgsql (not plain `sql`) since they read a row,
+  branch on it, then write - `claim_trip_riders`/`unclaim_trip_rider` each
+  do their insert/delete + confirmed-flag flip as two statements inside one
+  function call, which Postgres already runs atomically per function
+  invocation, so "can't partially apply" falls out of using a function at
+  all rather than needing an explicit transaction block.
+- [src/lib/driver/server-functions.ts](src/lib/driver/server-functions.ts) —
+  `addTripRiders` now calls `supabase.rpc('claim_trip_riders', ...)` instead
+  of inserting into `trip_riders` and updating `ride_requests` directly (and
+  no longer needs its own `trips` select to find the leg - the RPC looks
+  that up itself from `trips.direction`). Added `removeTripRider` (POST →
+  `unclaim_trip_rider` RPC) and `reopenTrip` (POST → `reopen_trip` RPC).
+  Removed `confirmedColumnForLeg` and `buildTripRiderInserts` - both were
+  pure helpers that existed only to build the direct-write payload
+  `addTripRiders` no longer sends; that logic now lives in the SQL RPC
+  instead, so the JS-side helpers and their tests in
+  [tests/driver/tripHelpers.test.ts](tests/driver/tripHelpers.test.ts) were
+  deleted rather than left as dead code.
+- [src/components/driver/RemoveTripRiderButton.tsx](src/components/driver/RemoveTripRiderButton.tsx),
+  [ReopenTripButton.tsx](src/components/driver/ReopenTripButton.tsx) — new,
+  same shape as [CompleteTripButton.tsx](src/components/driver/CompleteTripButton.tsx):
+  own `useMutation`, calls an `onRemoved`/`onReopened` callback prop on
+  success rather than invalidating queries itself, leaving that to the
+  route's existing `refresh()`.
+- [src/routes/driver.trips.$tripId.tsx](src/routes/driver.trips.$tripId.tsx)
+  — each current-rider `<li>` now renders a `RemoveTripRiderButton`
+  (unconditionally, on both open and completed trips - see assumptions);
+  the "Completed" badge now sits next to a `ReopenTripButton` instead of
+  standing alone. Both wire into the page's existing `refresh()` (which
+  invalidates both the trip-detail and driver-trips-list queries), so
+  removing a rider or reopening a trip updates the UI without a reload -
+  reopening in particular causes `getTripDetail` to refetch with
+  `status: 'open'`, which brings the "Add riders" section back since that
+  section (and the `unclaimed_ride_requests` call backing it) was already
+  conditioned on `trip.status !== 'completed'` from Prompt #5.
+
+**Assumptions made:**
+
+- **Unauthorized RPC calls raise a Postgres exception ("rejected"), not a
+  silent no-op.** The prompt allowed either ("gets rejected/no-op on all
+  three"); picked exceptions because it's the one behavior that's
+  identical and unambiguous across all three RPCs (an UPDATE-based no-op
+  wouldn't naturally apply to `claim_trip_riders`, which INSERTs), and
+  because it matches how the app already surfaces RPC failures
+  (`if (error) throw error`) - the driver sees a real error rather than a
+  click that silently did nothing.
+- **The Remove button is shown on a completed trip's riders too, not just
+  an open one.** Neither the RPC nor the prompt restricts unclaiming to
+  open trips (unlike `claim_trip_riders`, which does check `status =
+  'open'`), so read that as intentionally asymmetric - a driver correcting
+  a mistake after marking a trip complete shouldn't be blocked. Flagging in
+  case removing a rider from a completed trip should actually be
+  disallowed or should force a reopen first.
+- **`reopen_trip` allows an admin as well as the trip's own driver** ("same
+  ownership check (or admin)" from the prompt, read literally) - no admin
+  UI calls it yet, but the RLS test covers an admin-authorized path isn't
+  needed since the app itself never calls it as admin; only the
+  driver-vs-different-driver case is exercised end-to-end through the UI.
+
+**Left as placeholder / open questions:**
+
+- No confirmation dialog before Remove or Reopen - both fire immediately on
+  click, consistent with Complete's existing one-click pattern from Prompt
+  #5 and CLAUDE.md's "simple for MVP" framing elsewhere in this build, but
+  worth reconsidering for Remove specifically since it's the first
+  irreversible-feeling driver action with no undo path other than the
+  rider re-adding themselves as a candidate.
+- Removing a rider from a trip does not notify the requester in any way -
+  their `/request` page will just flip back to "Still needs a ride" next
+  time they load it. Same no-notifications posture as every other prompt so
+  far.
+
+**Verification:**
+
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests vitest.config.ts` — clean.
+- `npx prettier --check` on every file touched this prompt — clean (did
+  **not** run `prettier --write`/`--check` against the whole repo or
+  `CLAUDE.md` as a single file - doing so once during this prompt reflowed
+  unrelated pre-existing content in `CLAUDE.md`'s Branding section in a way
+  that changed a paragraph's list-nesting under markdown's lazy-continuation
+  rules; reverted that and hand-appended just the new section instead, to
+  avoid touching content outside this prompt's scope. `CLAUDE.md` and
+  `src/styles.css` remain pre-existing `--check` failures per Prompt #3's
+  build log, unchanged by this prompt).
+- `npm run build` — production build (client + SSR) succeeds.
+- `supabase db reset` (applies all five migrations cleanly from scratch,
+  including this prompt's) → `npm run test:rls`: **14/14 passed** (13 from
+  Prompts #2/#4/#4.5/#5 + 1 new scenario covering all three RPCs' ownership
+  checks, the unclaim-frees-the-candidate behavior, and the old direct-write
+  policy's removal), run twice for repeatability. Also had to update one
+  *existing* Prompt #5 test that claimed a rider via a direct
+  `ride_requests` update (the now-removed path) to go through
+  `claim_trip_riders()` instead - it was failing after the policy drop,
+  which is expected and confirms the drop actually took effect.
+- `npx vitest run` (`tests/rides/*` + `tests/driver/*`): **31/31 passed**
+  (18 unchanged in `tests/rides`, 13 in `tests/driver` - down from Prompt
+  #5's 15 there after deleting the 4 `confirmedColumnForLeg`/
+  `buildTripRiderInserts` tests and adding 2 new ones, one each for
+  `RemoveTripRiderButton` and `ReopenTripButton`).
+- Live-checked in a real browser via the preview tool against the local
+  Supabase stack, signed in as the seeded dev driver (`npm run seed:dev`;
+  a `dev-requester` ride request with a full arrival leg was inserted via
+  direct SQL):
+  - Created a DFW/arrival trip, selected the seeded requester as a
+    candidate, clicked "Add selected riders" - claimed via
+    `claim_trip_riders()`, appeared in "Current riders" with a "Remove"
+    button.
+  - Clicked "Remove" - the rider disappeared from "Current riders" and
+    immediately reappeared in the "Add riders" candidate list, with no page
+    reload (confirmed via `unclaim_trip_rider()`'s effect and the route's
+    query invalidation).
+  - Marked the trip complete (badge changed to "Completed" next to a new
+    "Reopen trip" button, "Add riders" section disappeared) - clicked
+    "Reopen trip" - the badge and button were replaced by "Mark trip
+    complete" again and the "Add riders" section reappeared immediately,
+    confirming `reopen_trip()` and the query invalidation work end-to-end.
+  - No console errors at any point in the flow.
+  - Test fixture rows were deleted afterward and `supabase db reset`
+    re-run (`npm run test:rls` confirmed 14/14 still passing against the
+    clean schema) to leave the local DB clean for the next session.
+
+## Prompt #5.6: Remove trip completion entirely
+
+**Scope:** Removed the `trips.status` column and every feature built on it -
+trip completion turned out not to matter for this app. This is a partial
+*reversal* of Prompt #5 (which introduced `status`, the open/completed
+dashboard grouping, and the "Add riders" `status !== 'completed'` gate) and
+Prompt #5.5 (which added `reopen_trip()` and the `status = 'open'` claim
+gate specifically to manage that column) - see "Reversed from Prompts #5/
+#5.5" below for the exact list of what got removed. No requester/admin
+changes.
+
+**Routes/files/components introduced or changed:**
+
+- [supabase/migrations/20260825000000_remove_trip_status.sql](supabase/migrations/20260825000000_remove_trip_status.sql)
+  — `alter table public.trips drop column status`, a `create or replace` of
+  `claim_trip_riders()` with the `status = 'open'` check removed (redefined
+  *before* the column drop, since the old body still referenced
+  `v_trip.status` - dropping the column first would have broken it), and
+  `drop function public.reopen_trip(uuid)`. `unclaim_trip_rider()` needed no
+  changes - it was never gated on status.
+- [src/lib/driver/server-functions.ts](src/lib/driver/server-functions.ts) —
+  `TripRow` and the `trips` select lists in `getMyDriverTrips`/
+  `getTripDetail` no longer include `status`; `getMyDriverTrips` returns a
+  single `trips` array (still sorted `scheduled_time ascending` server-side,
+  unchanged) instead of `{ upcoming, completed }`; `getTripDetail` always
+  calls `unclaimed_ride_requests` instead of skipping it for a completed
+  trip. Deleted `completeTrip` and `reopenTrip`.
+- [src/lib/driver/types.ts](src/lib/driver/types.ts) — deleted `TripStatus`
+  and `Trip.status`; `DriverTripsOverview` now has one `trips: Trip[]`
+  instead of `upcoming`/`completed`.
+- [src/routes/driver.index.tsx](src/routes/driver.index.tsx) — replaced the
+  two `<section>`s ("Upcoming trips"/"Completed trips") with one flat
+  `data.trips.map(...)` grid, plus a single "No trips yet." empty state.
+- [src/routes/driver.trips.$tripId.tsx](src/routes/driver.trips.$tripId.tsx)
+  — removed the `trip.status === 'open'` ternary around the header (no more
+  Complete/Reopen button or "Completed" badge - just the airport/direction
+  heading and scheduled time), and removed the `trip.status === 'open' &&`
+  guard around the "Add riders" section so it always renders.
+  `RemoveTripRiderButton` needed no changes - it already worked
+  unconditionally, and removing the status column just means the
+  open/completed asymmetry it used to live under (Prompt #5.5's "Left as
+  placeholder" note about whether Remove should be blocked on a completed
+  trip) no longer exists as a question at all.
+
+**Reversed from Prompts #5/#5.5 (deleted, not just changed):**
+
+- `trips.status` column and its `check (status in ('open', 'completed'))`
+  constraint from [20260820000000_schema_and_rls.sql](supabase/migrations/20260820000000_schema_and_rls.sql)
+  (Prompt #2) - dropped by this prompt's migration rather than editing the
+  original file, per standard migration practice (never rewrite an applied
+  migration).
+- `reopen_trip()` RPC, added by
+  [20260824000000_driver_write_tightening.sql](supabase/migrations/20260824000000_driver_write_tightening.sql)
+  (Prompt #5.5) - dropped outright, no replacement.
+- `src/components/driver/CompleteTripButton.tsx` (Prompt #5) and
+  `src/components/driver/ReopenTripButton.tsx` (Prompt #5.5) - deleted,
+  along with `tests/driver/CompleteTripButton.test.tsx` and
+  `tests/driver/ReopenTripButton.test.tsx`.
+- `completeTrip`/`reopenTrip` server functions (Prompt #5/#5.5) - deleted
+  from `src/lib/driver/server-functions.ts`.
+- RLS test coverage: the reopen half of Prompt #5.5's "driver write
+  tightening" test in [tests/rls.test.ts](tests/rls.test.ts) (the
+  mark-completed → reopen-rejected-for-other-driver → reopen-succeeds
+  sequence) - removed, and that describe block's title/wording trimmed from
+  "claim/unclaim/reopen" to "claim/unclaim" accordingly. Two *unrelated*
+  Prompt #5/#2 tests that happened to use `status` as a convenient "update
+  some column" target (`driver D can insert/update their own trips`, `driver
+  D cannot update a trip owned by a different driver`, and the admin
+  all-tables-update test) were repointed to update `scheduled_time` instead
+  - those tests are about update permissions in general, not about status
+  specifically, so they needed a different column, not deletion.
+
+**Assumptions made:**
+
+- **No confirmation/undo step was needed for the destructive migration
+  itself** beyond the standard `supabase db reset` verification - the
+  prompt was explicit ("drop the status column... delete reopen_trip
+  entirely") and this is local dev data, not a hosted project with real
+  rows.
+- **The "Add riders" section's `unclaimed_ride_requests` RPC call is now
+  unconditional in `getTripDetail`** rather than kept behind some other
+  condition - there's no longer any trip state to condition it on, so this
+  follows directly from removing `status`, not a new judgment call.
+
+**Left as placeholder / open questions:**
+
+- No RTL component tests exist for `driver.index.tsx` (`DriverDashboard`)
+  or `driver.trips.$tripId.tsx` (`TripDetailPage`) themselves, in this
+  prompt or any prior one - every previous prompt verified these two route
+  files live in the browser only (see Prompts #5's and #5.5's Verification
+  sections), never via Vitest/RTL, unlike the presentational components
+  they render (`DriverTripCard`, `AddRidersForm`, `RemoveTripRiderButton`,
+  etc.), which do have direct tests. This prompt's instructions asked to
+  "update the driver-dashboard test" and "update the trip-detail test" for
+  the flat-ordering and always-renders-Add-riders behavior, but no such
+  tests exist to update - both files are route components wired to
+  `createFileRoute`/`Route.useParams()`, and building a router-backed RTL
+  harness for them would be new test infrastructure this codebase has never
+  used, not a update to something existing. Verified both behaviors live in
+  the browser instead (see Verification below), consistent with how these
+  two files have always been checked. Flagging in case a router-testing
+  harness is actually wanted going forward - it would need to land as its
+  own scoped effort, not folded into this prompt.
+
+**Verification:**
+
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests vitest.config.ts` — clean.
+- `npx prettier --check` on every file touched this prompt — clean (ran
+  `--write` only on the specific files this prompt touched, not the whole
+  repo/`CLAUDE.md`, per the note added to Prompt #5.5's build log entry).
+- `npm run build` — production build (client + SSR) succeeds.
+- `supabase db reset` (applies all six migrations cleanly from scratch,
+  including this prompt's) → `npm run test:rls`: **14/14 passed** (same
+  count as after Prompt #5.5 - one reopen scenario was removed but no new
+  scenario was added this prompt), run twice for repeatability. Two
+  existing tests needed a follow-up fix unrelated to status removal
+  directly: they compared a Postgres `timestamptz` update's returned string
+  against a hand-built ISO string with `.toBe()`, which fails because
+  Postgres formats the offset as `+00:00` rather than `Z` - switched to
+  comparing `Date` values (or, for the "update should be rejected" case,
+  asserting the column stayed `null`, which is a strictly stronger check
+  than the original format-mismatch-prone string comparison anyway).
+- `npx vitest run` (`tests/rides/*` + `tests/driver/*`): **29/29 passed**
+  (31 from Prompt #5.5 minus the 2 deleted `CompleteTripButton`/
+  `ReopenTripButton` tests).
+- Live-checked in a real browser via the preview tool against the local
+  Supabase stack, signed in as the seeded dev driver (`npm run seed:dev`):
+  - Created a DFW/arrival trip scheduled Aug 22 6:00 PM - its detail page
+    showed no "Completed" badge, no Complete/Reopen button, and the "Add
+    riders" section rendered immediately on a brand-new trip (confirming
+    the section is no longer gated on any trip state).
+  - Created a second trip, DAL/departure scheduled *earlier* (Aug 21, 9:00
+    AM), deliberately created *after* the first one - back on `/driver`,
+    the dashboard rendered one flat, unheaded list with the DAL/Aug 21
+    trip listed first and the DFW/Aug 22 trip second, confirming the
+    dashboard sorts by `scheduled_time` rather than creation order or any
+    status grouping.
+  - No app console errors or server errors (`preview_logs`) at any point;
+    a batch of `net::ERR_CONNECTION_REFUSED` console entries were Vite's
+    HMR websocket reconnect noise from the preview tab being idle across
+    navigations, unrelated to the app.
+  - Test fixture rows were deleted afterward and `supabase db reset`
+    re-run (`npm run test:rls` confirmed 14/14 still passing against the
+    clean schema) to leave the local DB clean for the next session.

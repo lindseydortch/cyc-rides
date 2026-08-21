@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  buildTripInsert,
-  buildTripRiderInserts,
-  confirmedColumnForLeg,
-  ridersForTrip,
-} from '#/lib/driver/server-functions'
+import { buildTripInsert, ridersForTrip } from '#/lib/driver/server-functions'
 import type { DriverTripRiderRow } from '#/lib/driver/server-functions'
 
 describe('buildTripInsert', () => {
@@ -22,31 +17,6 @@ describe('buildTripInsert', () => {
       direction: 'arrival',
       scheduled_time: '2026-09-01T10:00:00.000Z',
     })
-  })
-})
-
-describe('confirmedColumnForLeg', () => {
-  it('maps arrival to arrival_ride_confirmed, not departure', () => {
-    expect(confirmedColumnForLeg('arrival')).toBe('arrival_ride_confirmed')
-  })
-
-  it('maps departure to departure_ride_confirmed, not arrival', () => {
-    expect(confirmedColumnForLeg('departure')).toBe('departure_ride_confirmed')
-  })
-})
-
-describe('buildTripRiderInserts', () => {
-  it('builds one trip_riders row per selected ride request, tagged with the trip leg', () => {
-    const rows = buildTripRiderInserts('trip-1', 'departure', ['rr-1', 'rr-2'])
-
-    expect(rows).toEqual([
-      { trip_id: 'trip-1', ride_request_id: 'rr-1', leg: 'departure' },
-      { trip_id: 'trip-1', ride_request_id: 'rr-2', leg: 'departure' },
-    ])
-  })
-
-  it('returns an empty array for no selections', () => {
-    expect(buildTripRiderInserts('trip-1', 'arrival', [])).toEqual([])
   })
 })
 

@@ -1,7 +1,5 @@
 import type { Airport, Leg } from '#/lib/rides/types'
 
-export type TripStatus = 'open' | 'completed'
-
 export interface TripRider {
   rideRequestId: string
   personName: string | null
@@ -14,7 +12,6 @@ export interface Trip {
   airport: Airport | null
   direction: Leg
   scheduledTime: string | null
-  status: TripStatus
   riders: TripRider[]
 }
 
@@ -26,8 +23,7 @@ export interface DriverCapacity {
 export interface DriverTripsOverview {
   driverId: string
   capacity: DriverCapacity
-  upcoming: Trip[]
-  completed: Trip[]
+  trips: Trip[]
 }
 
 export interface RideCandidate {

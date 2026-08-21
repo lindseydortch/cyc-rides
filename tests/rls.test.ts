@@ -319,13 +319,16 @@ describe('drivers', () => {
     expect(insertTripErr).toBeNull()
     expect(newTrip).not.toBeNull()
 
+    const newScheduledTime = new Date(Date.now() + 3600_000).toISOString()
     const { data: updatedTrip, error: updateTripErr } = await driverD.client
       .from('trips')
-      .update({ status: 'completed' })
+      .update({ scheduled_time: newScheduledTime })
       .eq('id', newTrip!.id)
       .select()
     expect(updateTripErr).toBeNull()
-    expect(updatedTrip?.[0].status).toBe('completed')
+    expect(new Date(updatedTrip?.[0].scheduled_time).getTime()).toBe(
+      new Date(newScheduledTime).getTime(),
+    )
 
     const { error: insertRiderErr } = await driverD.client
       .from('trip_riders')
@@ -365,9 +368,10 @@ describe('drivers', () => {
       .single()
     expect(otherTripErr).toBeNull()
 
+    const attemptedTime = new Date(Date.now() + 3600_000).toISOString()
     const { data: updateResult, error: updateErr } = await driverD.client
       .from('trips')
-      .update({ status: 'completed' })
+      .update({ scheduled_time: attemptedTime })
       .eq('id', otherTrip!.id)
       .select()
     expect(updateErr).toBeNull()
@@ -375,10 +379,10 @@ describe('drivers', () => {
 
     const { data: verifyUnchanged } = await admin
       .from('trips')
-      .select('status')
+      .select('scheduled_time')
       .eq('id', otherTrip!.id)
       .single()
-    expect(verifyUnchanged?.status).toBe('open')
+    expect(verifyUnchanged?.scheduled_time).toBeNull()
   })
 })
 
@@ -442,20 +446,23 @@ describe('driver trip flow (Prompt #5)', () => {
     expect(candidatesForRequesterErr).toBeNull()
     expect(candidatesForRequester).toHaveLength(0)
 
-    // Driver D claims requester F: insert trip_riders + flip the confirmed
-    // flag, exactly like the app's addTripRiders server function does.
-    const { error: insertRiderErr } = await driverD.client
-      .from('trip_riders')
-      .insert({ trip_id: tripId, ride_request_id: rrF, leg: 'arrival' })
-    expect(insertRiderErr).toBeNull()
+    // Driver D claims requester F via claim_trip_riders() - the only way a
+    // driver can insert trip_riders + flip the confirmed flag as of Prompt
+    // #5.5 (see the "driver write tightening" describe block below for
+    // coverage of the RPCs' ownership checks and the direct-write path
+    // being gone).
+    const { error: claimErr } = await driverD.client.rpc('claim_trip_riders', {
+      trip_id: tripId,
+      ride_request_ids: [rrF],
+    })
+    expect(claimErr).toBeNull()
 
-    const { data: confirmResult, error: confirmErr } = await driverD.client
+    const { data: confirmedRow } = await admin
       .from('ride_requests')
-      .update({ arrival_ride_confirmed: true })
+      .select('arrival_ride_confirmed')
       .eq('id', rrF)
-      .select()
-    expect(confirmErr).toBeNull()
-    expect(confirmResult?.[0].arrival_ride_confirmed).toBe(true)
+      .single()
+    expect(confirmedRow?.arrival_ride_confirmed).toBe(true)
 
     // Now claimed - no longer an unclaimed candidate.
     const { data: candidatesAfter, error: candidatesAfterErr } =
@@ -493,6 +500,155 @@ describe('driver trip flow (Prompt #5)', () => {
       await requesterA.client.rpc('driver_trip_riders')
     expect(tripRidersForRequesterErr).toBeNull()
     expect(tripRidersForRequester).toHaveLength(0)
+  })
+})
+
+describe('driver write tightening: claim/unclaim RPCs (Prompt #5.5)', () => {
+  it('a driver can claim/unclaim on their own trip; a different driver is rejected/no-op on both; unclaiming frees the candidate up again; the old direct-update path is gone', async () => {
+    const requesterG = await createTestUser('requester-g@rls-test.cycrides.dev')
+    userIdsToCleanUp.push(requesterG)
+    await admin
+      .from('people')
+      .update({ role: 'requester', name: 'Requester G' })
+      .eq('id', requesterG.id)
+
+    const arrivalTime = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString()
+    const { data: rrGData, error: rrGErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterG.id,
+        airport: 'DAL',
+        arrival_flight: 'DL700',
+        arrival_time: arrivalTime,
+      })
+      .select()
+      .single()
+    expect(rrGErr).toBeNull()
+    const rrG: string = rrGData.id
+
+    const { data: tripRow, error: tripErr } = await admin
+      .from('trips')
+      .insert({
+        driver_id: driverRowId,
+        airport: 'DAL',
+        direction: 'arrival',
+        scheduled_time: arrivalTime,
+      })
+      .select()
+      .single()
+    expect(tripErr).toBeNull()
+    const tripId: string = tripRow.id
+
+    const otherDriverPerson = await createTestUser(
+      'driver-other-write@rls-test.cycrides.dev',
+    )
+    userIdsToCleanUp.push(otherDriverPerson)
+    await admin
+      .from('people')
+      .update({ role: 'driver', name: 'Other Write Driver' })
+      .eq('id', otherDriverPerson.id)
+    const { error: otherDriverErr } = await admin.from('drivers').insert({
+      person_id: otherDriverPerson.id,
+      vehicle_make_model: 'Ford Transit',
+      passenger_capacity: 8,
+    })
+    expect(otherDriverErr).toBeNull()
+
+    // A different driver cannot claim on driver D's trip.
+    const { error: rejectedClaimErr } = await otherDriverPerson.client.rpc(
+      'claim_trip_riders',
+      { trip_id: tripId, ride_request_ids: [rrG] },
+    )
+    expect(rejectedClaimErr).not.toBeNull()
+
+    const { data: unchangedAfterRejectedClaim } = await admin
+      .from('trip_riders')
+      .select('*')
+      .eq('trip_id', tripId)
+    expect(unchangedAfterRejectedClaim).toHaveLength(0)
+
+    // Driver D can claim requester G on their own trip.
+    const { error: claimErr } = await driverD.client.rpc('claim_trip_riders', {
+      trip_id: tripId,
+      ride_request_ids: [rrG],
+    })
+    expect(claimErr).toBeNull()
+
+    const { data: claimedRow } = await admin
+      .from('ride_requests')
+      .select('arrival_ride_confirmed')
+      .eq('id', rrG)
+      .single()
+    expect(claimedRow?.arrival_ride_confirmed).toBe(true)
+
+    const { data: tripRiderRow } = await admin
+      .from('trip_riders')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('ride_request_id', rrG)
+    expect(tripRiderRow).toHaveLength(1)
+
+    // A different driver cannot unclaim on driver D's trip either.
+    const { error: rejectedUnclaimErr } = await otherDriverPerson.client.rpc(
+      'unclaim_trip_rider',
+      { trip_id: tripId, ride_request_id: rrG },
+    )
+    expect(rejectedUnclaimErr).not.toBeNull()
+
+    const { data: stillClaimed } = await admin
+      .from('trip_riders')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('ride_request_id', rrG)
+    expect(stillClaimed).toHaveLength(1)
+
+    // Driver D can unclaim requester G, which frees them up as a candidate
+    // again.
+    const { error: unclaimErr } = await driverD.client.rpc(
+      'unclaim_trip_rider',
+      { trip_id: tripId, ride_request_id: rrG },
+    )
+    expect(unclaimErr).toBeNull()
+
+    const { data: unclaimedRow } = await admin
+      .from('ride_requests')
+      .select('arrival_ride_confirmed')
+      .eq('id', rrG)
+      .single()
+    expect(unclaimedRow?.arrival_ride_confirmed).toBe(false)
+
+    const { data: tripRiderGone } = await admin
+      .from('trip_riders')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('ride_request_id', rrG)
+    expect(tripRiderGone).toHaveLength(0)
+
+    const { data: candidatesAfterUnclaim, error: candidatesErr } =
+      await driverD.client.rpc('unclaimed_ride_requests', {
+        p_airport: 'DAL',
+        p_direction: 'arrival',
+        p_reference_time: arrivalTime,
+      })
+    expect(candidatesErr).toBeNull()
+    const idsAfterUnclaim =
+      candidatesAfterUnclaim?.map(
+        (c: { ride_request_id: string }) => c.ride_request_id,
+      ) ?? []
+    expect(idsAfterUnclaim).toContain(rrG)
+
+    // The old broad direct-write path is gone entirely, not just unused - a
+    // direct PostgREST update against ride_requests is rejected by RLS even
+    // from a driver who legitimately owns the trip: no permissive policy
+    // grants it, so the update matches zero rows rather than erroring.
+    const { data: directUpdateResult, error: directUpdateErr } =
+      await driverD.client
+        .from('ride_requests')
+        .update({ arrival_ride_confirmed: true })
+        .eq('id', rrG)
+        .select()
+    expect(directUpdateErr).toBeNull()
+    expect(directUpdateResult).toHaveLength(0)
   })
 })
 
@@ -586,7 +742,7 @@ describe('admin', () => {
 
     const { error: tripUpdateErr } = await adminE.client
       .from('trips')
-      .update({ status: 'completed' })
+      .update({ scheduled_time: new Date().toISOString() })
       .eq('id', sharedTripId)
     expect(tripUpdateErr).toBeNull()
 

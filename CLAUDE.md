@@ -60,3 +60,18 @@ These are the exact CSS variables pulled from the live site:
 Overall feel: white/light body background by default, a navy band for the
 header or hero area, blue for interactive elements, green reserved for
 positive/confirmed states.
+
+## Server functions: type alias gotcha
+In a `server-functions.ts` file, never factor `ReturnType<typeof
+getSupabaseServerClient>` out into a top-level named type alias (e.g. `type
+SupabaseServerClient = ReturnType<typeof getSupabaseServerClient>`) and use
+that alias as a parameter type elsewhere in the file. TanStack Start's
+client/server code-splitting transform fails to strip the server-only import
+in that case and `npm run build` breaks with `[import-protection] Import
+denied in client environment`, even though the alias itself is a type-only
+export. It does *not* fail when the same `ReturnType<typeof
+getSupabaseServerClient>` expression is inlined directly at each use site
+(e.g. as a function parameter's type). Discovered in Prompt #5
+([src/lib/driver/server-functions.ts](src/lib/driver/server-functions.ts))
+by bisecting a broken build down to one line. Stick to the inline form in
+every server-functions file, starting with Prompt #6.

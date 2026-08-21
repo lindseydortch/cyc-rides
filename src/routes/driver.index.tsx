@@ -33,34 +33,14 @@ function DriverDashboard() {
         <p className="mt-4 text-muted">
           We couldn't find your driver profile. Contact an organizer.
         </p>
+      ) : data.trips.length === 0 ? (
+        <p className="mt-4 text-muted">No trips yet.</p>
       ) : (
-        <>
-          <section className="mt-8">
-            <h2 className="text-lg font-semibold text-ink">Upcoming trips</h2>
-            {data.upcoming.length === 0 ? (
-              <p className="mt-2 text-sm text-muted">No upcoming trips yet.</p>
-            ) : (
-              <div className="mt-4 grid gap-4">
-                {data.upcoming.map((trip) => (
-                  <DriverTripCard key={trip.id} trip={trip} />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="mt-10">
-            <h2 className="text-lg font-semibold text-ink">Completed trips</h2>
-            {data.completed.length === 0 ? (
-              <p className="mt-2 text-sm text-muted">No completed trips yet.</p>
-            ) : (
-              <div className="mt-4 grid gap-4">
-                {data.completed.map((trip) => (
-                  <DriverTripCard key={trip.id} trip={trip} />
-                ))}
-              </div>
-            )}
-          </section>
-        </>
+        <div className="mt-8 grid gap-4">
+          {data.trips.map((trip) => (
+            <DriverTripCard key={trip.id} trip={trip} />
+          ))}
+        </div>
       )}
     </div>
   )

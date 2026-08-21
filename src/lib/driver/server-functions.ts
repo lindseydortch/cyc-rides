@@ -22,7 +22,6 @@ interface TripRow {
   airport: Airport | null
   direction: Leg
   scheduled_time: string | null
-  status: 'open' | 'completed'
 }
 
 export interface DriverTripRiderRow {
@@ -77,30 +76,6 @@ export function buildTripInsert(driverId: string, input: CreateTripInput) {
   }
 }
 
-// Which ride_requests column gets flipped to true when a rider is added to
-// a trip on this leg - arrival and departure are tracked independently, so
-// adding a rider to an arrival trip must never touch departure_ride_confirmed.
-export function confirmedColumnForLeg(
-  leg: Leg,
-): 'arrival_ride_confirmed' | 'departure_ride_confirmed' {
-  return leg === 'arrival'
-    ? 'arrival_ride_confirmed'
-    : 'departure_ride_confirmed'
-}
-
-// Builds the trip_riders insert rows for a batch of selected candidates.
-export function buildTripRiderInserts(
-  tripId: string,
-  leg: Leg,
-  rideRequestIds: string[],
-): { trip_id: string; ride_request_id: string; leg: Leg }[] {
-  return rideRequestIds.map((rideRequestId) => ({
-    trip_id: tripId,
-    ride_request_id: rideRequestId,
-    leg,
-  }))
-}
-
 async function getOwnDriverRow(
   supabase: ReturnType<typeof getSupabaseServerClient>,
   userId: string,
@@ -122,8 +97,8 @@ function toCapacity(driver: DriverRow): DriverCapacity {
   }
 }
 
-// Returns the current driver's trips (grouped by open/completed status) and
-// each trip's currently attached riders, plus their vehicle capacity.
+// Returns the current driver's trips, soonest-scheduled first, and each
+// trip's currently attached riders, plus their vehicle capacity.
 export const getMyDriverTrips = createServerFn({ method: 'GET' }).handler(
   async (): Promise<DriverTripsOverview> => {
     const supabase = getSupabaseServerClient()
@@ -136,7 +111,7 @@ export const getMyDriverTrips = createServerFn({ method: 'GET' }).handler(
 
     const { data: tripRows, error: tripsError } = await supabase
       .from('trips')
-      .select('id, airport, direction, scheduled_time, status')
+      .select('id, airport, direction, scheduled_time')
       .eq('driver_id', driver.id)
       .order('scheduled_time', { ascending: true })
     if (tripsError) throw tripsError
@@ -151,15 +126,13 @@ export const getMyDriverTrips = createServerFn({ method: 'GET' }).handler(
       airport: row.airport,
       direction: row.direction,
       scheduledTime: row.scheduled_time,
-      status: row.status,
       riders: ridersForTrip(riders, row.id),
     }))
 
     return {
       driverId: driver.id,
       capacity: toCapacity(driver),
-      upcoming: trips.filter((t) => t.status === 'open'),
-      completed: trips.filter((t) => t.status === 'completed'),
+      trips,
     }
   },
 )
@@ -198,7 +171,7 @@ export const getTripDetail = createServerFn({ method: 'GET' })
 
     const { data: tripRow, error: tripError } = await supabase
       .from('trips')
-      .select('id, airport, direction, scheduled_time, status')
+      .select('id, airport, direction, scheduled_time')
       .eq('id', data.tripId)
       .single<TripRow>()
     if (tripError) throw tripError
@@ -211,17 +184,16 @@ export const getTripDetail = createServerFn({ method: 'GET' })
       tripRow.id,
     )
 
-    let candidateRows: UnclaimedRideRequestRow[] = []
-    if (tripRow.status !== 'completed') {
-      const { data: candidateData, error: candidatesError } =
-        await supabase.rpc('unclaimed_ride_requests', {
-          p_airport: tripRow.airport,
-          p_direction: tripRow.direction,
-          p_reference_time: tripRow.scheduled_time,
-        })
-      if (candidatesError) throw candidatesError
-      candidateRows = (candidateData ?? []) as UnclaimedRideRequestRow[]
-    }
+    const { data: candidateData, error: candidatesError } = await supabase.rpc(
+      'unclaimed_ride_requests',
+      {
+        p_airport: tripRow.airport,
+        p_direction: tripRow.direction,
+        p_reference_time: tripRow.scheduled_time,
+      },
+    )
+    if (candidatesError) throw candidatesError
+    const candidateRows = (candidateData ?? []) as UnclaimedRideRequestRow[]
 
     const candidates: RideCandidate[] = candidateRows.map((row) => ({
       rideRequestId: row.ride_request_id,
@@ -237,7 +209,6 @@ export const getTripDetail = createServerFn({ method: 'GET' })
         airport: tripRow.airport,
         direction: tripRow.direction,
         scheduledTime: tripRow.scheduled_time,
-        status: tripRow.status,
         riders,
       },
       capacity: toCapacity(driver),
@@ -245,41 +216,29 @@ export const getTripDetail = createServerFn({ method: 'GET' })
     }
   })
 
+// Claiming riders is a driver write to ride_requests (flipping the confirmed
+// flag), so it goes through the claim_trip_riders() RPC rather than a direct
+// insert+update - see the "tighten driver write access" migration for why.
 export const addTripRiders = createServerFn({ method: 'POST' })
   .validator((data: { tripId: string; rideRequestIds: string[] }) => data)
   .handler(async ({ data }) => {
     if (data.rideRequestIds.length === 0) return
 
     const supabase = getSupabaseServerClient()
-
-    const { data: trip, error: tripError } = await supabase
-      .from('trips')
-      .select('direction')
-      .eq('id', data.tripId)
-      .single<{ direction: Leg }>()
-    if (tripError) throw tripError
-
-    const { error: insertError } = await supabase
-      .from('trip_riders')
-      .insert(
-        buildTripRiderInserts(data.tripId, trip.direction, data.rideRequestIds),
-      )
-    if (insertError) throw insertError
-
-    const { error: updateError } = await supabase
-      .from('ride_requests')
-      .update({ [confirmedColumnForLeg(trip.direction)]: true })
-      .in('id', data.rideRequestIds)
-    if (updateError) throw updateError
+    const { error } = await supabase.rpc('claim_trip_riders', {
+      trip_id: data.tripId,
+      ride_request_ids: data.rideRequestIds,
+    })
+    if (error) throw error
   })
 
-export const completeTrip = createServerFn({ method: 'POST' })
-  .validator((data: { tripId: string }) => data)
+export const removeTripRider = createServerFn({ method: 'POST' })
+  .validator((data: { tripId: string; rideRequestId: string }) => data)
   .handler(async ({ data }) => {
     const supabase = getSupabaseServerClient()
-    const { error } = await supabase
-      .from('trips')
-      .update({ status: 'completed' })
-      .eq('id', data.tripId)
+    const { error } = await supabase.rpc('unclaim_trip_rider', {
+      trip_id: data.tripId,
+      ride_request_id: data.rideRequestId,
+    })
     if (error) throw error
   })

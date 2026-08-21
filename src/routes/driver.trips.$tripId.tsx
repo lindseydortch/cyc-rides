@@ -7,7 +7,7 @@ import {
   driverTripsQueryKey,
 } from '#/lib/driver/query-keys'
 import { AddRidersForm } from '#/components/driver/AddRidersForm'
-import { CompleteTripButton } from '#/components/driver/CompleteTripButton'
+import { RemoveTripRiderButton } from '#/components/driver/RemoveTripRiderButton'
 
 // No beforeLoad here - the /driver layout route already guards the whole
 // section.
@@ -55,22 +55,13 @@ function TripDetailPage() {
 
   return (
     <div className="mx-auto max-w-4xl p-8">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-ink">
-            {trip.airport} — {directionLabel(trip.direction)}
-          </h1>
-          <p className="mt-1 text-muted">
-            {formatScheduledTime(trip.scheduledTime)}
-          </p>
-        </div>
-        {trip.status === 'open' ? (
-          <CompleteTripButton tripId={tripId} onCompleted={refresh} />
-        ) : (
-          <span className="rounded-full bg-green/10 px-3 py-1 text-sm font-medium text-green">
-            Completed
-          </span>
-        )}
+      <div>
+        <h1 className="text-3xl font-bold text-ink">
+          {trip.airport} — {directionLabel(trip.direction)}
+        </h1>
+        <p className="mt-1 text-muted">
+          {formatScheduledTime(trip.scheduledTime)}
+        </p>
       </div>
 
       <section className="mt-8">
@@ -82,30 +73,35 @@ function TripDetailPage() {
             {trip.riders.map((rider) => (
               <li
                 key={rider.rideRequestId}
-                className="rounded-md border border-line p-3 text-sm text-ink"
+                className="flex items-center justify-between gap-3 rounded-md border border-line p-3 text-sm text-ink"
               >
-                {rider.personName ?? 'Rider'}
-                {rider.companionNames.length > 0 &&
-                  ` (+ ${rider.companionNames.join(', ')})`}
-                {rider.flightTime &&
-                  ` — ${formatScheduledTime(rider.flightTime)}`}
+                <span>
+                  {rider.personName ?? 'Rider'}
+                  {rider.companionNames.length > 0 &&
+                    ` (+ ${rider.companionNames.join(', ')})`}
+                  {rider.flightTime &&
+                    ` — ${formatScheduledTime(rider.flightTime)}`}
+                </span>
+                <RemoveTripRiderButton
+                  tripId={tripId}
+                  rideRequestId={rider.rideRequestId}
+                  onRemoved={refresh}
+                />
               </li>
             ))}
           </ul>
         )}
       </section>
 
-      {trip.status === 'open' && (
-        <section className="mt-10">
-          <h2 className="text-lg font-semibold text-ink">Add riders</h2>
-          <AddRidersForm
-            tripId={tripId}
-            candidates={candidates}
-            capacity={capacity}
-            onAdded={refresh}
-          />
-        </section>
-      )}
+      <section className="mt-10">
+        <h2 className="text-lg font-semibold text-ink">Add riders</h2>
+        <AddRidersForm
+          tripId={tripId}
+          candidates={candidates}
+          capacity={capacity}
+          onAdded={refresh}
+        />
+      </section>
     </div>
   )
 }
