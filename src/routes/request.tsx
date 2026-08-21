@@ -34,6 +34,8 @@ function toInitialData(status: RideRequestStatus): RequestFormInitialData {
     departureFlight: status.departureFlight ?? '',
     departureTime: toDatetimeLocalValue(status.departureTime),
     companionNames: status.companions.map((c) => c.name ?? ''),
+    stayingAtHotel: status.stayingAtHotel,
+    stayingFullDuration: status.stayingFullDuration,
   }
 }
 

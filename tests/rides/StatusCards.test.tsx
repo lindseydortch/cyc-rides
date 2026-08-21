@@ -28,6 +28,8 @@ function baseStatus(
       scheduledTime: null,
       tripMates: [],
     },
+    stayingAtHotel: null,
+    stayingFullDuration: null,
     ...overrides,
   }
 }
@@ -144,5 +146,30 @@ describe('StatusCards', () => {
 
     await user.click(screen.getByRole('button', { name: /edit request/i }))
     expect(onEditRequest).toHaveBeenCalled()
+  })
+})
+
+describe('StatusCards hotel stay readback', () => {
+  it('shows nothing when unanswered', () => {
+    renderCards(baseStatus({ stayingAtHotel: null, stayingFullDuration: null }))
+    expect(
+      screen.queryByText(/staying at the conference hotel/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows the full-stay readback', () => {
+    renderCards(baseStatus({ stayingAtHotel: true, stayingFullDuration: true }))
+    expect(
+      screen.getByText('Staying at the conference hotel'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows the partial-stay readback', () => {
+    renderCards(
+      baseStatus({ stayingAtHotel: true, stayingFullDuration: false }),
+    )
+    expect(
+      screen.getByText('Staying at the conference hotel (partial stay)'),
+    ).toBeInTheDocument()
   })
 })

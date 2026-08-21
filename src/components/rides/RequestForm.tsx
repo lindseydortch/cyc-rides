@@ -24,6 +24,8 @@ export interface RequestFormInitialData {
   departureFlight: string
   departureTime: string
   companionNames: string[]
+  stayingAtHotel: boolean | null
+  stayingFullDuration: boolean | null
 }
 
 interface RequestFormProps {
@@ -79,6 +81,12 @@ export function RequestForm({
   const [companions, setCompanions] = useState<string[]>(
     initialData?.companionNames ?? [],
   )
+  const [stayingAtHotel, setStayingAtHotel] = useState(
+    initialData?.stayingAtHotel ?? false,
+  )
+  const [stayingFullDuration, setStayingFullDuration] = useState(
+    initialData?.stayingFullDuration ?? null,
+  )
   const [errors, setErrors] = useState<FormErrors>({})
 
   const arrivalFlightRef = useRef<HTMLInputElement>(null)
@@ -111,6 +119,11 @@ export function RequestForm({
 
   function updateCompanion(index: number, value: string) {
     setCompanions((prev) => prev.map((c, i) => (i === index ? value : c)))
+  }
+
+  function toggleStayingAtHotel(checked: boolean) {
+    setStayingAtHotel(checked)
+    if (!checked) setStayingFullDuration(null)
   }
 
   function validate(): boolean {
@@ -167,6 +180,8 @@ export function RequestForm({
           ? new Date(departureTime).toISOString()
           : null,
         companionNames: companions,
+        stayingAtHotel: stayingAtHotel ? true : null,
+        stayingFullDuration: stayingAtHotel ? stayingFullDuration : null,
       },
     })
   }
@@ -311,6 +326,30 @@ export function RequestForm({
         >
           + Add a companion
         </button>
+      </fieldset>
+
+      <fieldset className="grid gap-3 rounded-md border border-line p-4">
+        <legend className="px-1 text-sm font-semibold text-ink">
+          Hotel stay
+        </legend>
+        <label className="flex items-center gap-2 text-sm font-medium text-ink">
+          <input
+            type="checkbox"
+            checked={stayingAtHotel}
+            onChange={(e) => toggleStayingAtHotel(e.target.checked)}
+          />
+          Staying at the conference hotel?
+        </label>
+        {stayingAtHotel && (
+          <label className="ml-6 flex items-center gap-2 text-sm font-medium text-ink">
+            <input
+              type="checkbox"
+              checked={stayingFullDuration === true}
+              onChange={(e) => setStayingFullDuration(e.target.checked)}
+            />
+            Staying the entire conference?
+          </label>
+        )}
       </fieldset>
 
       {errors.form && (

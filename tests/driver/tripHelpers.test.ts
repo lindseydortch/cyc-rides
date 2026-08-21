@@ -29,6 +29,8 @@ describe('ridersForTrip', () => {
       companion_names: ['Sam Lee'],
       flight: 'AA100',
       flight_time: '2026-09-01T10:00:00.000Z',
+      staying_at_hotel: true,
+      staying_full_duration: false,
     },
     {
       trip_id: 'trip-2',
@@ -37,6 +39,8 @@ describe('ridersForTrip', () => {
       companion_names: null,
       flight: 'AA200',
       flight_time: '2026-09-01T11:00:00.000Z',
+      staying_at_hotel: null,
+      staying_full_duration: null,
     },
   ]
 
@@ -47,6 +51,8 @@ describe('ridersForTrip', () => {
         personName: 'Jordan Lee',
         companionNames: ['Sam Lee'],
         flightTime: '2026-09-01T10:00:00.000Z',
+        stayingAtHotel: true,
+        stayingFullDuration: false,
       },
     ])
   })
@@ -58,6 +64,8 @@ describe('ridersForTrip', () => {
         personName: 'Alex Rivera',
         companionNames: [],
         flightTime: '2026-09-01T11:00:00.000Z',
+        stayingAtHotel: null,
+        stayingFullDuration: null,
       },
     ])
   })

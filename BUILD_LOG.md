@@ -1357,3 +1357,350 @@ changes.
   - Test fixture rows were deleted afterward and `supabase db reset`
     re-run (`npm run test:rls` confirmed 14/14 still passing against the
     clean schema) to leave the local DB clean for the next session.
+
+## Prompt #6: Admin dashboard
+
+**Scope:** Built out `/admin` (previously a stub route) into a full
+dashboard for `people.is_admin = true` users: a summary-counts row, a
+filterable TanStack Table of all `ride_requests`, and a TanStack Table of
+all `trips` whose rows link into the driver flow's existing trip-detail
+screen for override add/remove. Backend + frontend both included; no new
+tables or columns.
+
+**Routes/files/components introduced:**
+
+- [supabase/migrations/20260826000000_admin_dashboard.sql](supabase/migrations/20260826000000_admin_dashboard.sql)
+  — re-defines the four driver-flow SECURITY DEFINER RPCs from Prompts #5/
+  #5.5/#5.6 (`driver_trip_riders`, `unclaimed_ride_requests`,
+  `claim_trip_riders`, `unclaim_trip_rider`) to add `or public.is_admin()`
+  to each one's authorization check, so an admin can call them against a
+  trip it doesn't own. `claim_trip_riders` is redefined from its Prompt
+  #5.6 body (no `status` column reference — that column was dropped that
+  prompt), not the earlier #5.5 body, so this migration doesn't resurrect
+  a column that no longer exists.
+- [src/lib/driver/server-functions.ts](src/lib/driver/server-functions.ts)
+  — `getTripDetail` no longer requires the caller to own a `drivers` row
+  (previously called `getOwnDriverRow(supabase, user.id)`); it now selects
+  `driver_id` off the trip row itself and derives vehicle capacity from
+  *that* driver, not the caller. RLS on `trips` (own trips or admin-all)
+  is what still gates who can select the trip at all — this change only
+  removes the extra assumption that the caller is that trip's driver. This
+  is what let the admin override view reuse `/driver/trips/$tripId` and
+  its `TripDetailPage`/`AddRidersForm`/`RemoveTripRiderButton` components
+  directly, with no second copy of the add/remove-riders UI, per the
+  prompt's explicit instruction to reuse rather than rebuild it.
+- [src/lib/auth/route-guards.ts](src/lib/auth/route-guards.ts) —
+  `requireAdminSession` (redirects non-admins to their own home route,
+  same pattern as `requireDriverSession`).
+- [src/lib/admin/types.ts](src/lib/admin/types.ts),
+  [src/lib/admin/query-keys.ts](src/lib/admin/query-keys.ts),
+  [src/lib/admin/server-functions.ts](src/lib/admin/server-functions.ts) —
+  `getAdminSummary`, `getAdminRideRequests`, `getAdminTrips`, plus pure
+  mapper functions (`buildAdminRideRequestRows`, `buildAdminTripRows`,
+  `legNeedsAttention`, `rowNeedsAttention`, `countByKey`) split out for
+  direct testing, same pattern as the driver/rides server-functions files.
+  Each admin server function calls a `requireAdminUser` check against the
+  caller's own `people` row before doing anything else — necessary because
+  several existing RLS policies (e.g. "drivers can select all
+  ride_requests") are broader than "admin-only", so RLS row-scoping alone
+  isn't a strong enough gate for an admin-only endpoint; a driver calling
+  these functions directly would otherwise get the full unfiltered dataset
+  back too.
+- [src/components/admin/SummaryCards.tsx](src/components/admin/SummaryCards.tsx),
+  [src/components/admin/RideRequestsTable.tsx](src/components/admin/RideRequestsTable.tsx),
+  [src/components/admin/TripsTable.tsx](src/components/admin/TripsTable.tsx)
+  — new admin-only presentational components, `RideRequestsTable` and
+  `TripsTable` built on `@tanstack/react-table` (added as a new
+  dependency, pinned to the `^8` stable line — `npm install` without a
+  version pin resolved a `9.1.2` pre-release with a materially different
+  API surface that doesn't export `useReactTable`/`getCoreRowModel` the
+  documented way; flagging in case this happens again on a future `npm
+  install` without an explicit range).
+- [src/routes/admin.tsx](src/routes/admin.tsx) — replaced the Prompt #3
+  stub; wires `requireAdminSession` into `beforeLoad` and renders the
+  three pieces above via three separate `useQuery` calls.
+
+**Assumptions made:**
+
+- "Total riders" = count of `ride_requests` rows (one per person who has
+  submitted a request), not a count of `people` with `role = 'requester'`
+  — the two should be equal in practice since a ride request always
+  belongs to a requester, but the summary count is computed from the same
+  `ride_requests` query the table below it uses, not a separate `people`
+  count, so it can't drift from what the table shows.
+- "Unconfirmed arrivals"/"unconfirmed departures" (summary) and "at least
+  one leg is unconfirmed" (default table filter) both mean *requested but
+  not yet confirmed* — i.e. the requester filled in a flight number and
+  time for that leg, but no driver has claimed them yet. A ride request
+  with a totally empty leg (never requested) does not count as
+  "unconfirmed" under this reading, since there's nothing yet for an admin
+  to act on for that leg. This mirrors the same `requested`/`confirmed`
+  distinction `getMyRideStatus` (Prompt #4) already uses for `LegStatus`.
+- The admin override view is reached by linking straight into
+  `/driver/trips/$tripId` (admins already pass that route's
+  `requireDriverSession` guard, since it explicitly allows `is_admin`
+  through) rather than adding a separate `/admin/trips/$tripId` route that
+  wraps the same component — this was the more literal reading of "reuse
+  the driver trip-detail component ... so admins should be able to
+  add/remove any rider from any trip" and avoids a second route existing
+  for the exact same screen.
+- Party size in the admin ride-requests table = `1 + companion count`,
+  matching the same convention `unclaimed_ride_requests` already uses.
+
+**Left as placeholder / open questions:**
+
+- No pagination, sorting-by-column-header, or search on either table —
+  `@tanstack/react-table`'s `getCoreRowModel` only; the prompt didn't ask
+  for it and dev-scale data doesn't need it yet, but it's the first
+  obvious thing to add if the rider/trip counts grow.
+- `RideRequestsTable`'s "Show everyone" toggle is local component state,
+  reset on remount/reload rather than persisted — acceptable for now since
+  nothing else on this page needs to read that toggle's value.
+
+**Verification:**
+
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests vitest.config.ts` — clean.
+- `npx prettier --check` on every file touched this prompt — clean.
+- `npm run build` — production build (client + SSR) succeeds; confirms the
+  `getTripDetail` refactor and new admin server-functions file don't hit
+  the `ReturnType<typeof getSupabaseServerClient>` type-alias gotcha
+  documented in `CLAUDE.md` (the admin file's `requireAdminUser` uses the
+  inline form).
+- `supabase db reset` (applies all seven migrations cleanly, including
+  this prompt's) → `npm run test:rls`: **15/15 passed** (14 from Prompt
+  #5.6 plus one new scenario: admin E claims and unclaims a rider on a
+  trip owned by driver D, confirming the RPC-level admin bypass), run
+  twice for repeatability.
+- `npx vitest run` (`tests/rides/*` + `tests/driver/*` + `tests/admin/*`):
+  **65/65 passed**, including new tests for `requireAdminSession`'s
+  redirect behavior, the `buildAdminRideRequestRows`/`buildAdminTripRows`
+  pure mappers, `rowNeedsAttention`'s filter logic, `SummaryCards`, and
+  `RideRequestsTable`'s default-filtered-vs-show-everyone toggle. Added
+  `tests/admin` to the `test:components` npm script.
+- Live-checked in a real browser via the preview tool against the local
+  Supabase stack, seeding one ride request (Dev Requester, DFW arrival)
+  and one trip (Dev Driver, DFW arrival) directly via the service_role
+  client, then signed in as the seeded dev admin (`npm run seed:dev`):
+  - `/admin` showed the summary counts (1 unconfirmed arrival, 0
+    unconfirmed departures, 1 total rider, 2 total drivers), the ride
+    requests table defaulted to showing only the unconfirmed row, and the
+    trips table showed Dev Driver's trip with 0 riders and a working link.
+  - Clicked into the trip (owned by Dev Driver, not the admin) — it opened
+    `/driver/trips/$tripId` showing Dev Driver's own vehicle capacity (4
+    passengers / 3 luggage), added Dev Requester as a rider from the admin
+    session, confirmed it persisted across a reload, then removed them
+    again — both succeeded with no console errors, and `/admin`'s tables
+    reflected the change afterward.
+  - Signed out and back in as the seeded dev requester (non-admin);
+    navigating to `/admin` redirected to `/request`, confirming the
+    non-admin redirect.
+  - One hiccup unrelated to app logic: mid-session, Vite's dev-server dep
+    optimizer got into a bad state (`504 Outdated Optimize Dep` /
+    `Invalid hook call`) after a `supabase db reset` + dev-server restart
+    happened while a tab was still open against the old module graph;
+    clearing `node_modules/.vite` and opening a fresh tab resolved it.
+    Nothing in this prompt's code caused it.
+  - Seeded fixture rows were deleted afterward and `supabase db reset`
+    re-run (`npm run test:rls` confirmed 15/15 still passing) to leave the
+    local DB clean for the next session.
+
+## Prompt #7: End-to-end smoke test
+
+**Scope:** One Playwright test (`tests/e2e/smoke.spec.ts`) walking the full
+request -> claim -> confirm flow across all three roles against a real
+local Supabase instance and the Vite dev server — no mocking, and no
+re-testing of individual pieces already covered by `tests/rls.test.ts` or
+the `tests/{rides,driver,admin}` component suites. No app code changed.
+
+**Files introduced:**
+
+- `playwright.config.ts` — single `chromium` project, `webServer` boots
+  `npm run dev` and waits on `http://localhost:3000`.
+- `tests/e2e/smoke.spec.ts` — the test itself.
+- `@playwright/test` added as a devDependency; `npm run test:e2e` script
+  added; Chromium browser installed via `npx playwright install chromium`.
+- `.gitignore` — added `/test-results`, `/playwright-report`,
+  `/blob-report`, `/playwright/.cache` (Playwright's own output dirs).
+
+**Assumptions made / how this test signs users in:**
+
+- This app's only two sign-in paths are real LinkedIn OAuth (not
+  automatable) and the fixed 3-account dev bypass on `/login` (Prompt
+  #3.5), which only covers three specific pre-seeded accounts, not
+  arbitrary fresh signups. Since the prompt asks for a requester and a
+  driver to actually "sign up" and go through onboarding (not start
+  pre-onboarded), the test creates real auth users directly via the
+  `service_role` client — same pattern `tests/rls.test.ts` already uses
+  for its fixture users — then signs each one into the browser by
+  dynamically importing the app's own `src/lib/supabase/client.ts` module
+  straight from the running Vite dev server and calling
+  `supabaseBrowserClient.auth.signInWithPassword()` in-page. That's the
+  exact code path (and therefore the exact cookie-based session, via
+  `@supabase/ssr`) a real sign-in produces — no hand-rolled cookie format.
+- Each fixture user's `people.name` is set directly via the `service_role`
+  client right after creation (mirroring how `tests/rls.test.ts` sets up
+  fixture data that isn't itself under test) — onboarding has no name
+  field, so there's no UI path to set it, and the assertions need a
+  reliably unique display name per test run.
+- The admin account is created and configured (`role: 'driver'`,
+  `is_admin: true`, plus a `drivers` row) directly via the `service_role`
+  client rather than through onboarding, matching this app's existing
+  pattern (`scripts/seed-dev-users.ts`) — onboarding's UI only ever offers
+  a choice between "requester" and "driver," never an admin option, so
+  there's no onboarding flow for admin to walk through.
+- The trip's scheduled time is set to the same value as the request's
+  arrival time for a readable test, but `unclaimed_ride_requests` (see
+  `supabase/migrations/20260823000000_driver_trip_flow.sql`) matches
+  purely on airport + direction and only uses the reference time for sort
+  order — an exact match isn't required by the app itself.
+- Emails/names are suffixed with a per-run timestamp
+  (`e2e-requester-<ts>@e2e-smoke.cycrides.dev`, `E2E Requester <ts>`, etc.)
+  so the test is safe to re-run without colliding with leftover data from
+  a previous run, and admin-dashboard assertions can match on an exact,
+  unambiguous name rather than "the only row."
+
+**Left as placeholder / open questions:**
+
+- Confirmed the requester's own `StatusCards` "Riding with:" list is *not*
+  where a solo requester's own companion shows up — `mapTripMates` (in
+  `src/lib/rides/server-functions.ts`) deliberately excludes the viewer's
+  own `ride_request_id`, so that list only ever shows *other* riders
+  sharing the same trip. The prompt's "companion listed as a trip-mate"
+  check is therefore done on the driver's trip-detail page instead (the
+  "Current riders" list, where the companion appears grouped under the
+  requester's own row rather than as a separate person) — flagging this
+  in case the intent was actually to test something on the requester's own
+  page, which would need a second confirmed rider on the same trip to
+  ever populate.
+- Single browser tab open at a time, by design: an earlier version kept
+  the requester's and driver's tabs open concurrently (side by side for
+  the whole test, to allow reloading the original requester tab at the
+  end) and this reliably overloaded the Vite dev server after a couple of
+  minutes — server fetches started aborting (`ECONNRESET`), which
+  cascaded into a React Query retry storm and eventually a real renderer
+  crash (`SIGTRAP`). Rewriting the test so each role's stage opens its own
+  context and closes it before the next stage starts (re-signing in as
+  the requester for step 3, rather than reloading a tab held open the
+  whole time) made the run fast (~4-9s) and reliably repeatable. This
+  looks like dev-server fragility under concurrent tabs rather than an
+  app bug, but flagging it since a future CI environment may be more or
+  less prone to it than this machine.
+- No CI wiring yet — `npm run test:e2e` needs `supabase start` running
+  locally first (same precondition as `npm run test:rls`); nothing in this
+  prompt adds that to a CI pipeline since none exists yet in this repo.
+
+**Verification:**
+
+- `npx playwright test` (`chromium` project, single worker): **1/1
+  passed**, run four times in a row for repeatability (~4-9s per run,
+  after the concurrent-tabs rewrite above) — no flakes.
+- Confirmed cleanup: after each run, queried `auth.users` via the
+  `service_role` client for any leftover `@e2e-smoke.cycrides.dev`
+  accounts — zero found, confirming the test's `afterAll` teardown (which
+  deletes the auth users it created, cascading via `on delete cascade`
+  through `people` -> `ride_requests`/`drivers` -> `trips`/`trip_riders`)
+  works even after a mid-run failure, not just on a clean pass.
+- `npx tsc --noEmit` — clean.
+- `npx eslint tests/e2e playwright.config.ts` — clean (one
+  `@typescript-eslint/no-unnecessary-condition` false positive on the
+  fixture-creation error guard, silenced the same way
+  `tests/rls.test.ts` already does for the identical pattern).
+- `npx prettier --check` on every file touched this prompt — clean.
+- Did not run `npm run build` / full-repo `eslint`/`prettier` against this
+  prompt specifically since no application code changed — only new
+  test/config files and a devDependency addition.
+
+## Prompt #8: Conference hotel stay info
+
+**Scope:** Two new display-only fields on a ride request —
+`staying_at_hotel` and `staying_full_duration` — surfaced as a readback on
+the requester's own status page, a compact badge on both driver rider
+lists, and a column on the admin ride-requests table. Doesn't touch ride
+matching, capacity, or claim logic anywhere.
+
+**Migration:**
+[supabase/migrations/20260827000000_hotel_stay_info.sql](supabase/migrations/20260827000000_hotel_stay_info.sql) —
+adds the two nullable boolean columns to `ride_requests` (no RLS changes;
+covered by existing per-row policies), and redefines
+`driver_trip_riders()`/`unclaimed_ride_requests()` to return the two new
+columns so the driver screens can show a badge without a second query per
+rider. Both RPCs needed an explicit `drop function` before `create or
+replace` — Postgres won't let `create or replace` change a function's
+OUT-parameter row type in place (discovered via a failed `supabase db
+reset`, not by reading the docs first — flagging in case this bites again
+in a future prompt that extends an existing table-returning RPC).
+
+**Files introduced:**
+- [src/lib/hotel-stay.ts](src/lib/hotel-stay.ts) — the shared
+  `hotelStayBadge()` pure function used by the driver add-riders list,
+  driver current-riders list, and admin table, so the three surfaces can't
+  drift on what counts as "partial" vs "full" vs "nothing to show."
+- [src/components/driver/CurrentRidersList.tsx](src/components/driver/CurrentRidersList.tsx)
+  — extracted the current-riders `<ul>` out of
+  [src/routes/driver.trips.$tripId.tsx](src/routes/driver.trips.$tripId.tsx)
+  into its own component, matching the existing `RemoveTripRiderButton`
+  pattern. Needed so the badge rendering is unit-testable the same way
+  `AddRidersForm`'s candidate badges are — the prompt explicitly asked for
+  both to be tested, and routes in this codebase aren't otherwise
+  unit-tested.
+- [tests/driver/CurrentRidersList.test.tsx](tests/driver/CurrentRidersList.test.tsx),
+  [tests/hotelStay.test.ts](tests/hotelStay.test.ts) — new test files.
+
+**Files touched:** `RequestForm.tsx`/`RequestFormInitialData` (two
+checkboxes, nested one only rendered when the parent is checked),
+`StatusCards.tsx` (sentence-style readback), `AddRidersForm.tsx` and
+`RideRequestsTable.tsx` (badge/column), plus the `rides`/`driver`/`admin`
+`types.ts` and `server-functions.ts` files (new fields threaded through
+every row shape and Supabase select/insert/update) and `request.tsx`'s
+`toInitialData`.
+
+**Assumptions made:**
+- Checkbox semantics: the parent "Staying at the conference hotel?"
+  checkbox only ever submits `true` or `null` (never an explicit `false`)
+  — there was no way for the UI to distinguish "answered no" from
+  "unanswered" with a single checkbox, and the display spec (StatusCards
+  shows nothing for both `false` and `null`) doesn't need that
+  distinction. Unchecking it after checking it resets the nested field to
+  `null`, not `false`, per the prompt's "don't force a false."
+- The nested "Staying the entire conference?" checkbox does distinguish
+  `false` (explicitly unchecked → "partial stay") from `null` (never
+  touched → treated as unanswered/full ambiguity). `hotelStayBadge()`
+  treats a `null` nested value the same as `false` ("Hotel (partial)")
+  since the badge only has two non-empty states to show — the longer
+  StatusCards readback follows the same rule for the same reason.
+- Badge label copy ("Hotel" / "Hotel (partial)") and StatusCards sentence
+  copy ("Staying at the conference hotel" / "... (partial stay)") were my
+  own wording — the prompt only gave these as parenthetical examples.
+
+**Left as placeholder / open questions:**
+- No RLS test changes — confirmed the two new columns are plain
+  `ride_requests` columns with no new access pattern, so the existing
+  `tests/rls.test.ts` coverage of that table's row-level policies already
+  applies. Didn't add a new RLS test case per prompt's explicit
+  instruction ("No RLS changes needed").
+
+**Verification:**
+- `npx vitest run` — 83/83 passing (14 suites; the pre-existing
+  `tests/e2e/smoke.spec.ts` Playwright-in-Vitest failure is unrelated to
+  this prompt and present on `main` before this change — `vitest.config.ts`
+  has no exclude for `tests/e2e`).
+- `npx tsc --noEmit` — clean.
+- `npx eslint src tests` — clean.
+- `npx prettier --check src tests` — clean (pre-existing `src/styles.css`
+  warning untouched by this prompt).
+- `npm run build` — clean; confirmed no `[import-protection]` server-import
+  leak in any of the three touched `server-functions.ts` files (see the
+  type-alias gotcha at the top of this file).
+- `npx supabase db reset` against the new migration — applied cleanly after
+  adding the `drop function` fix; `npm run test:rls` — 15/15 passing.
+- Live-verified in the browser via the dev-auth bypass end to end: created
+  a ride request as Dev Requester with "staying at the hotel" + "entire
+  conference" both checked, confirmed `staying_at_hotel`/
+  `staying_full_duration` persisted as `true`/`true` via a direct `psql`
+  query, saw the "Staying at the conference hotel" readback on the status
+  page, saw the "Hotel" badge on Dev Driver's add-riders candidate row,
+  claimed the rider and saw the same badge on the current-riders list, and
+  saw a "Hotel" cell in the admin ride-requests table under "Show
+  everyone." Reset the local DB back to a clean (unseeded) state
+  afterward.

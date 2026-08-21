@@ -754,6 +754,99 @@ describe('admin', () => {
   })
 })
 
+describe('admin override on a trip it does not own (Prompt #6)', () => {
+  it('admin E can claim and unclaim a rider on a trip owned by driver D, and see it via driver_trip_riders/unclaimed_ride_requests', async () => {
+    const requesterH = await createTestUser('requester-h@rls-test.cycrides.dev')
+    userIdsToCleanUp.push(requesterH)
+    await admin
+      .from('people')
+      .update({ role: 'requester', name: 'Requester H' })
+      .eq('id', requesterH.id)
+
+    const arrivalTime = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString()
+    const { data: rrHData, error: rrHErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterH.id,
+        airport: 'DFW',
+        arrival_flight: 'AA900',
+        arrival_time: arrivalTime,
+      })
+      .select()
+      .single()
+    expect(rrHErr).toBeNull()
+    const rrH: string = rrHData.id
+
+    // A trip owned by driver D, not admin E.
+    const { data: tripRow, error: tripErr } = await admin
+      .from('trips')
+      .insert({
+        driver_id: driverRowId,
+        airport: 'DFW',
+        direction: 'arrival',
+        scheduled_time: arrivalTime,
+      })
+      .select()
+      .single()
+    expect(tripErr).toBeNull()
+    const tripId: string = tripRow.id
+
+    // Admin E sees requester H as an unclaimed candidate on driver D's trip,
+    // despite owning no drivers row itself.
+    const { data: candidatesForAdmin, error: candidatesForAdminErr } =
+      await adminE.client.rpc('unclaimed_ride_requests', {
+        p_airport: 'DFW',
+        p_direction: 'arrival',
+        p_reference_time: arrivalTime,
+      })
+    expect(candidatesForAdminErr).toBeNull()
+    const candidateIdsForAdmin =
+      candidatesForAdmin?.map(
+        (c: { ride_request_id: string }) => c.ride_request_id,
+      ) ?? []
+    expect(candidateIdsForAdmin).toContain(rrH)
+
+    // Admin E can claim requester H onto driver D's trip.
+    const { error: claimErr } = await adminE.client.rpc('claim_trip_riders', {
+      trip_id: tripId,
+      ride_request_ids: [rrH],
+    })
+    expect(claimErr).toBeNull()
+
+    const { data: claimedRow } = await admin
+      .from('ride_requests')
+      .select('arrival_ride_confirmed')
+      .eq('id', rrH)
+      .single()
+    expect(claimedRow?.arrival_ride_confirmed).toBe(true)
+
+    // driver_trip_riders() surfaces it to admin E even though the trip is
+    // driver D's, not admin E's own.
+    const { data: tripRidersForAdmin, error: tripRidersForAdminErr } =
+      await adminE.client.rpc('driver_trip_riders')
+    expect(tripRidersForAdminErr).toBeNull()
+    const claimedForAdmin = tripRidersForAdmin?.find(
+      (r: { trip_id: string; ride_request_id: string }) =>
+        r.trip_id === tripId && r.ride_request_id === rrH,
+    )
+    expect(claimedForAdmin).toMatchObject({ person_name: 'Requester H' })
+
+    // Admin E can also unclaim, freeing the rider up again.
+    const { error: unclaimErr } = await adminE.client.rpc(
+      'unclaim_trip_rider',
+      { trip_id: tripId, ride_request_id: rrH },
+    )
+    expect(unclaimErr).toBeNull()
+
+    const { data: unclaimedRow } = await admin
+      .from('ride_requests')
+      .select('arrival_ride_confirmed')
+      .eq('id', rrH)
+      .single()
+    expect(unclaimedRow?.arrival_ride_confirmed).toBe(false)
+  })
+})
+
 describe('anonymous access', () => {
   it('is rejected (zero rows) on every table', async () => {
     const anon = createClient(API_URL, ANON_KEY, {

@@ -33,4 +33,6 @@ export interface RideRequestStatus {
   companions: Companion[]
   arrival: LegStatus
   departure: LegStatus
+  stayingAtHotel: boolean | null
+  stayingFullDuration: boolean | null
 }

@@ -114,6 +114,8 @@ describe('RequestForm validation', () => {
     expect(call.data.arrivalFlight).toBe('AA100')
     expect(call.data.departureFlight).toBe('AA200')
     expect(call.data.companionNames).toEqual([])
+    expect(call.data.stayingAtHotel).toBeNull()
+    expect(call.data.stayingFullDuration).toBeNull()
   })
 
   it('adding and removing a companion field works', async () => {
@@ -139,6 +141,106 @@ describe('RequestForm validation', () => {
   })
 })
 
+describe('RequestForm hotel stay checkboxes', () => {
+  async function fillMinimalValidLeg(user: ReturnType<typeof userEvent.setup>) {
+    await user.selectOptions(screen.getByLabelText(/airport/i), 'DFW')
+    await user.type(screen.getByPlaceholderText(/AA100/i), 'AA100')
+    await user.type(
+      screen.getByLabelText(/arrival date & time/i),
+      '2026-09-01T10:00',
+    )
+  }
+
+  it('hides "staying the entire conference" until the hotel checkbox is checked', () => {
+    renderForm()
+    expect(
+      screen.queryByLabelText(/staying the entire conference/i),
+    ).not.toBeInTheDocument()
+  })
+
+  it('submits both fields as null when left unanswered', async () => {
+    const user = userEvent.setup()
+    renderForm()
+    await fillMinimalValidLeg(user)
+
+    await user.click(
+      screen.getByRole('button', { name: /submit ride request/i }),
+    )
+
+    await waitFor(() => expect(mockedCreateRideRequest).toHaveBeenCalled())
+    const call = mockedCreateRideRequest.mock.calls[0][0]
+    expect(call.data.stayingAtHotel).toBeNull()
+    expect(call.data.stayingFullDuration).toBeNull()
+  })
+
+  it('submits stayingAtHotel true and stayingFullDuration null when checked but the nested field is left unanswered', async () => {
+    const user = userEvent.setup()
+    renderForm()
+    await fillMinimalValidLeg(user)
+
+    await user.click(screen.getByLabelText(/staying at the conference hotel/i))
+    expect(
+      screen.getByLabelText(/staying the entire conference/i),
+    ).toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole('button', { name: /submit ride request/i }),
+    )
+
+    await waitFor(() => expect(mockedCreateRideRequest).toHaveBeenCalled())
+    const call = mockedCreateRideRequest.mock.calls[0][0]
+    expect(call.data.stayingAtHotel).toBe(true)
+    expect(call.data.stayingFullDuration).toBeNull()
+  })
+
+  it('submits stayingFullDuration false (partial stay) when the nested field is explicitly unchecked', async () => {
+    const user = userEvent.setup()
+    renderForm()
+    await fillMinimalValidLeg(user)
+
+    await user.click(screen.getByLabelText(/staying at the conference hotel/i))
+    // Check then uncheck to produce an explicit false, distinct from
+    // never having touched it.
+    await user.click(screen.getByLabelText(/staying the entire conference/i))
+    await user.click(screen.getByLabelText(/staying the entire conference/i))
+
+    await user.click(
+      screen.getByRole('button', { name: /submit ride request/i }),
+    )
+
+    await waitFor(() => expect(mockedCreateRideRequest).toHaveBeenCalled())
+    const call = mockedCreateRideRequest.mock.calls[0][0]
+    expect(call.data.stayingAtHotel).toBe(true)
+    expect(call.data.stayingFullDuration).toBe(false)
+  })
+
+  it('resets stayingFullDuration to null when the hotel checkbox is unchecked again', async () => {
+    const user = userEvent.setup()
+    renderForm()
+    await fillMinimalValidLeg(user)
+
+    const hotelCheckbox = screen.getByLabelText(
+      /staying at the conference hotel/i,
+    )
+    await user.click(hotelCheckbox)
+    await user.click(screen.getByLabelText(/staying the entire conference/i))
+    await user.click(hotelCheckbox)
+
+    expect(
+      screen.queryByLabelText(/staying the entire conference/i),
+    ).not.toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole('button', { name: /submit ride request/i }),
+    )
+
+    await waitFor(() => expect(mockedCreateRideRequest).toHaveBeenCalled())
+    const call = mockedCreateRideRequest.mock.calls[0][0]
+    expect(call.data.stayingAtHotel).toBeNull()
+    expect(call.data.stayingFullDuration).toBeNull()
+  })
+})
+
 describe('RequestForm edit mode', () => {
   const initialData: RequestFormInitialData = {
     airport: 'DFW',
@@ -147,6 +249,8 @@ describe('RequestForm edit mode', () => {
     departureFlight: '',
     departureTime: '',
     companionNames: ['Alex Rivera'],
+    stayingAtHotel: true,
+    stayingFullDuration: false,
   }
 
   it('prefills fields from initialData and submits an update round-trip', async () => {
@@ -156,6 +260,12 @@ describe('RequestForm edit mode', () => {
 
     expect(screen.getByDisplayValue('AA100')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Alex Rivera')).toBeInTheDocument()
+    expect(
+      screen.getByLabelText(/staying at the conference hotel/i),
+    ).toBeChecked()
+    expect(
+      screen.getByLabelText(/staying the entire conference/i),
+    ).not.toBeChecked()
 
     const arrivalFlightInput = screen.getByPlaceholderText(/AA100/i)
     await user.clear(arrivalFlightInput)

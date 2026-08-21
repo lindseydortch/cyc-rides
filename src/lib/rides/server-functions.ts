@@ -24,6 +24,8 @@ interface RideRequestRow {
   departure_flight: string | null
   departure_time: string | null
   departure_ride_confirmed: boolean
+  staying_at_hotel: boolean | null
+  staying_full_duration: boolean | null
 }
 
 // Pure mapper from the trip_mates_for_leg RPC result to the shape the UI
@@ -105,7 +107,7 @@ export const getMyRideStatus = createServerFn({ method: 'GET' }).handler(
     const { data: rideRequest } = await supabase
       .from('ride_requests')
       .select(
-        'id, airport, arrival_flight, arrival_time, arrival_ride_confirmed, departure_flight, departure_time, departure_ride_confirmed',
+        'id, airport, arrival_flight, arrival_time, arrival_ride_confirmed, departure_flight, departure_time, departure_ride_confirmed, staying_at_hotel, staying_full_duration',
       )
       .eq('person_id', user.id)
       .maybeSingle<RideRequestRow>()
@@ -152,6 +154,8 @@ export const getMyRideStatus = createServerFn({ method: 'GET' }).handler(
       companions: companions ?? [],
       arrival,
       departure,
+      stayingAtHotel: rideRequest.staying_at_hotel,
+      stayingFullDuration: rideRequest.staying_full_duration,
     }
   },
 )
@@ -167,6 +171,8 @@ export interface RideRequestFormInput {
   departureFlight: string | null
   departureTime: string | null
   companionNames: string[]
+  stayingAtHotel: boolean | null
+  stayingFullDuration: boolean | null
 }
 
 // Deletes all existing companions for the ride request and re-inserts the
@@ -214,6 +220,8 @@ export const createRideRequest = createServerFn({ method: 'POST' })
         arrival_time: data.arrivalTime,
         departure_flight: data.departureFlight,
         departure_time: data.departureTime,
+        staying_at_hotel: data.stayingAtHotel,
+        staying_full_duration: data.stayingFullDuration,
       })
       .select('id')
       .single()
@@ -253,6 +261,8 @@ export const updateRideRequest = createServerFn({ method: 'POST' })
         arrival_time: data.arrivalTime,
         departure_flight: data.departureFlight,
         departure_time: data.departureTime,
+        staying_at_hotel: data.stayingAtHotel,
+        staying_full_duration: data.stayingFullDuration,
       })
       .eq('id', rideRequest.id)
     if (updateError) throw updateError

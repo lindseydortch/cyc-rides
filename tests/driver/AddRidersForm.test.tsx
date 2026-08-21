@@ -20,6 +20,8 @@ const candidates: RideCandidate[] = [
     flight: 'AA100',
     flightTime: '2026-09-01T10:00:00.000Z',
     partySize: 2,
+    stayingAtHotel: true,
+    stayingFullDuration: true,
   },
   {
     rideRequestId: 'rr-2',
@@ -27,6 +29,8 @@ const candidates: RideCandidate[] = [
     flight: 'AA200',
     flightTime: '2026-09-01T10:30:00.000Z',
     partySize: 1,
+    stayingAtHotel: true,
+    stayingFullDuration: false,
   },
 ]
 
@@ -111,5 +115,30 @@ describe('AddRidersForm', () => {
     expect(
       screen.getByRole('button', { name: /add selected riders/i }),
     ).toBeDisabled()
+  })
+
+  it('shows a hotel badge per candidate, distinguishing full vs. partial stay', () => {
+    renderForm()
+
+    expect(screen.getByText('Hotel')).toBeInTheDocument()
+    expect(screen.getByText('Hotel (partial)')).toBeInTheDocument()
+  })
+
+  it('shows no hotel badge for a candidate who is not staying at the hotel', () => {
+    renderForm({
+      candidates: [
+        {
+          rideRequestId: 'rr-3',
+          personName: 'Sam Lee',
+          flight: 'AA300',
+          flightTime: '2026-09-01T11:00:00.000Z',
+          partySize: 1,
+          stayingAtHotel: null,
+          stayingFullDuration: null,
+        },
+      ],
+    })
+
+    expect(screen.queryByText(/hotel/i)).not.toBeInTheDocument()
   })
 })

@@ -7,7 +7,7 @@ import {
   driverTripsQueryKey,
 } from '#/lib/driver/query-keys'
 import { AddRidersForm } from '#/components/driver/AddRidersForm'
-import { RemoveTripRiderButton } from '#/components/driver/RemoveTripRiderButton'
+import { CurrentRidersList } from '#/components/driver/CurrentRidersList'
 
 // No beforeLoad here - the /driver layout route already guards the whole
 // section.
@@ -66,31 +66,11 @@ function TripDetailPage() {
 
       <section className="mt-8">
         <h2 className="text-lg font-semibold text-ink">Current riders</h2>
-        {trip.riders.length === 0 ? (
-          <p className="mt-2 text-sm text-muted">No riders added yet.</p>
-        ) : (
-          <ul className="mt-2 grid gap-2">
-            {trip.riders.map((rider) => (
-              <li
-                key={rider.rideRequestId}
-                className="flex items-center justify-between gap-3 rounded-md border border-line p-3 text-sm text-ink"
-              >
-                <span>
-                  {rider.personName ?? 'Rider'}
-                  {rider.companionNames.length > 0 &&
-                    ` (+ ${rider.companionNames.join(', ')})`}
-                  {rider.flightTime &&
-                    ` — ${formatScheduledTime(rider.flightTime)}`}
-                </span>
-                <RemoveTripRiderButton
-                  tripId={tripId}
-                  rideRequestId={rider.rideRequestId}
-                  onRemoved={refresh}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
+        <CurrentRidersList
+          tripId={tripId}
+          riders={trip.riders}
+          onRemoved={refresh}
+        />
       </section>
 
       <section className="mt-10">

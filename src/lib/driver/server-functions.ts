@@ -24,6 +24,10 @@ interface TripRow {
   scheduled_time: string | null
 }
 
+interface TripWithDriverRow extends TripRow {
+  driver_id: string
+}
+
 export interface DriverTripRiderRow {
   trip_id: string
   ride_request_id: string
@@ -31,6 +35,8 @@ export interface DriverTripRiderRow {
   companion_names: string[] | null
   flight: string | null
   flight_time: string | null
+  staying_at_hotel: boolean | null
+  staying_full_duration: boolean | null
 }
 
 interface UnclaimedRideRequestRow {
@@ -39,6 +45,8 @@ interface UnclaimedRideRequestRow {
   flight: string | null
   flight_time: string | null
   party_size: number
+  staying_at_hotel: boolean | null
+  staying_full_duration: boolean | null
 }
 
 // Pure mapper from the driver_trip_riders RPC's flat rows to the shape one
@@ -55,6 +63,8 @@ export function ridersForTrip(
       personName: row.person_name,
       companionNames: row.companion_names ?? [],
       flightTime: row.flight_time,
+      stayingAtHotel: row.staying_at_hotel,
+      stayingFullDuration: row.staying_full_duration,
     }))
 }
 
@@ -158,6 +168,12 @@ export const createTrip = createServerFn({ method: 'POST' })
     return { id: trip.id as string }
   })
 
+// Not scoped to the caller's own drivers row - RLS on `trips` already
+// restricts SELECT to trips the caller owns (owns_driver) or, for admins,
+// everything (see "admins can select all trips"). Deriving capacity from
+// the trip's own driver_id rather than the caller's own driver row is what
+// lets this same function power both the driver's own trip-detail screen
+// and the admin override view on a trip an admin doesn't own (Prompt #6).
 export const getTripDetail = createServerFn({ method: 'GET' })
   .validator((data: { tripId: string }) => data)
   .handler(async ({ data }): Promise<TripDetail> => {
@@ -167,14 +183,19 @@ export const getTripDetail = createServerFn({ method: 'GET' })
     } = await supabase.auth.getUser()
     if (!user) throw new Error('Not signed in')
 
-    const driver = await getOwnDriverRow(supabase, user.id)
-
     const { data: tripRow, error: tripError } = await supabase
       .from('trips')
-      .select('id, airport, direction, scheduled_time')
+      .select('id, driver_id, airport, direction, scheduled_time')
       .eq('id', data.tripId)
-      .single<TripRow>()
+      .single<TripWithDriverRow>()
     if (tripError) throw tripError
+
+    const { data: driverRow, error: driverError } = await supabase
+      .from('drivers')
+      .select('id, passenger_capacity, luggage_capacity')
+      .eq('id', tripRow.driver_id)
+      .single<DriverRow>()
+    if (driverError) throw driverError
 
     const { data: riderRows, error: ridersError } =
       await supabase.rpc('driver_trip_riders')
@@ -201,6 +222,8 @@ export const getTripDetail = createServerFn({ method: 'GET' })
       flight: row.flight,
       flightTime: row.flight_time,
       partySize: row.party_size,
+      stayingAtHotel: row.staying_at_hotel,
+      stayingFullDuration: row.staying_full_duration,
     }))
 
     return {
@@ -211,7 +234,7 @@ export const getTripDetail = createServerFn({ method: 'GET' })
         scheduledTime: tripRow.scheduled_time,
         riders,
       },
-      capacity: toCapacity(driver),
+      capacity: toCapacity(driverRow),
       candidates,
     }
   })

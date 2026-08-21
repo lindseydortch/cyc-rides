@@ -5,6 +5,8 @@ export interface TripRider {
   personName: string | null
   companionNames: string[]
   flightTime: string | null
+  stayingAtHotel: boolean | null
+  stayingFullDuration: boolean | null
 }
 
 export interface Trip {
@@ -32,6 +34,8 @@ export interface RideCandidate {
   flight: string | null
   flightTime: string | null
   partySize: number
+  stayingAtHotel: boolean | null
+  stayingFullDuration: boolean | null
 }
 
 export interface TripDetail {

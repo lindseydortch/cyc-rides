@@ -66,6 +66,16 @@ function LegCard({
   )
 }
 
+function hotelStayLabel(
+  stayingAtHotel: boolean | null,
+  stayingFullDuration: boolean | null,
+): string | null {
+  if (!stayingAtHotel) return null
+  return stayingFullDuration
+    ? 'Staying at the conference hotel'
+    : 'Staying at the conference hotel (partial stay)'
+}
+
 export function StatusCards({
   status,
   onEditRequest,
@@ -75,9 +85,19 @@ export function StatusCards({
   onEditRequest: () => void
   onAddLeg: (leg: Leg) => void
 }) {
+  const hotelStay = hotelStayLabel(
+    status.stayingAtHotel,
+    status.stayingFullDuration,
+  )
+
   return (
     <div className="mt-8">
-      <div className="flex justify-end">
+      <div className="flex items-center justify-between">
+        {hotelStay ? (
+          <p className="text-sm text-muted">{hotelStay}</p>
+        ) : (
+          <span />
+        )}
         <button
           type="button"
           onClick={onEditRequest}

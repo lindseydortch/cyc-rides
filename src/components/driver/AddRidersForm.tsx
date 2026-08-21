@@ -7,6 +7,7 @@ import {
   driverTripsQueryKey,
 } from '#/lib/driver/query-keys'
 import type { DriverCapacity, RideCandidate } from '#/lib/driver/types'
+import { hotelStayBadge } from '#/lib/hotel-stay'
 
 interface AddRidersFormProps {
   tripId: string
@@ -79,23 +80,34 @@ export function AddRidersForm({
       </p>
 
       <ul className="grid gap-2">
-        {candidates.map((candidate) => (
-          <li key={candidate.rideRequestId}>
-            <label className="flex items-center gap-3 rounded-md border border-line p-3 text-sm text-ink">
-              <input
-                type="checkbox"
-                checked={selected.has(candidate.rideRequestId)}
-                onChange={() => toggle(candidate.rideRequestId)}
-              />
-              <span className="flex-1">
-                {candidate.personName ?? 'Rider'} —{' '}
-                {candidate.flight ?? 'No flight #'} ·{' '}
-                {formatFlightTime(candidate.flightTime)} · party of{' '}
-                {candidate.partySize}
-              </span>
-            </label>
-          </li>
-        ))}
+        {candidates.map((candidate) => {
+          const badge = hotelStayBadge(
+            candidate.stayingAtHotel,
+            candidate.stayingFullDuration,
+          )
+          return (
+            <li key={candidate.rideRequestId}>
+              <label className="flex items-center gap-3 rounded-md border border-line p-3 text-sm text-ink">
+                <input
+                  type="checkbox"
+                  checked={selected.has(candidate.rideRequestId)}
+                  onChange={() => toggle(candidate.rideRequestId)}
+                />
+                <span className="flex-1">
+                  {candidate.personName ?? 'Rider'} —{' '}
+                  {candidate.flight ?? 'No flight #'} ·{' '}
+                  {formatFlightTime(candidate.flightTime)} · party of{' '}
+                  {candidate.partySize}
+                </span>
+                {badge && (
+                  <span className="rounded-full bg-cloud px-2 py-0.5 text-xs font-medium text-muted">
+                    {badge}
+                  </span>
+                )}
+              </label>
+            </li>
+          )
+        })}
       </ul>
 
       <button

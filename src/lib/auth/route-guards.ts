@@ -34,3 +34,13 @@ export async function requireDriverSession(): Promise<AuthSession> {
   }
   return session
 }
+
+// Same as requireOnboardedSession, but also redirects anyone who isn't an
+// admin back to their own home route. Use in beforeLoad for /admin.
+export async function requireAdminSession(): Promise<AuthSession> {
+  const session = await requireOnboardedSession()
+  if (!session.person.is_admin) {
+    throw redirect({ to: homeRouteForPerson(session.person) })
+  }
+  return session
+}
