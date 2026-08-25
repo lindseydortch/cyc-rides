@@ -67,7 +67,8 @@ export function AddRidersForm({
   if (candidates.length === 0) {
     return (
       <p className="mt-2 text-sm text-muted">
-        No unclaimed ride requests match this trip's airport and direction.
+        No unclaimed ride requests match this trip's airport, direction, and
+        time window.
       </p>
     )
   }

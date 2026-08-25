@@ -847,6 +847,266 @@ describe('admin override on a trip it does not own (Prompt #6)', () => {
   })
 })
 
+describe('create_trip_and_claim_riders (Prompt #9)', () => {
+  it('a driver can create a trip and claim riders in one call; a non-driver is rejected; a partially-invalid claim leaves no orphaned trip or trip_riders row', async () => {
+    const requesterI = await createTestUser('requester-i@rls-test.cycrides.dev')
+    userIdsToCleanUp.push(requesterI)
+    await admin
+      .from('people')
+      .update({ role: 'requester', name: 'Requester I' })
+      .eq('id', requesterI.id)
+
+    const departureTime = new Date(
+      Date.now() + 4 * 60 * 60 * 1000,
+    ).toISOString()
+    const { data: rrIData, error: rrIErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterI.id,
+        airport: 'DAL',
+        departure_flight: 'SW200',
+        departure_time: departureTime,
+      })
+      .select()
+      .single()
+    expect(rrIErr).toBeNull()
+    const rrI: string = rrIData.id
+
+    // A non-driver (requester A has no drivers row) is rejected outright -
+    // there's no way to end up owning a trip you didn't create.
+    const { error: nonDriverErr } = await requesterA.client.rpc(
+      'create_trip_and_claim_riders',
+      {
+        airport: 'DAL',
+        direction: 'departure',
+        scheduled_time: departureTime,
+        ride_request_ids: [rrI],
+      },
+    )
+    expect(nonDriverErr).not.toBeNull()
+
+    const { data: tripsAfterRejected } = await admin
+      .from('trips')
+      .select('*')
+      .eq('airport', 'DAL')
+      .eq('direction', 'departure')
+      .eq('scheduled_time', departureTime)
+    expect(tripsAfterRejected).toHaveLength(0)
+
+    // Driver D creates a trip and claims requester I in one call.
+    const { data: newTripId, error: createErr } = await driverD.client.rpc(
+      'create_trip_and_claim_riders',
+      {
+        airport: 'DAL',
+        direction: 'departure',
+        scheduled_time: departureTime,
+        ride_request_ids: [rrI],
+      },
+    )
+    expect(createErr).toBeNull()
+    expect(newTripId).toBeTruthy()
+
+    const { data: createdTrip } = await admin
+      .from('trips')
+      .select('*')
+      .eq('id', newTripId as string)
+      .single()
+    expect(createdTrip?.driver_id).toBe(driverRowId)
+    expect(createdTrip?.airport).toBe('DAL')
+    expect(createdTrip?.direction).toBe('departure')
+
+    const { data: claimedRow } = await admin
+      .from('ride_requests')
+      .select('departure_ride_confirmed')
+      .eq('id', rrI)
+      .single()
+    expect(claimedRow?.departure_ride_confirmed).toBe(true)
+
+    const { data: tripRiderRow } = await admin
+      .from('trip_riders')
+      .select('*')
+      .eq('trip_id', newTripId as string)
+      .eq('ride_request_id', rrI)
+    expect(tripRiderRow).toHaveLength(1)
+
+    // A partially-invalid claim (one real id + one nonexistent uuid) leaves
+    // no orphaned trip or trip_riders row behind - the whole call rolls
+    // back, same all-or-nothing guarantee claim_trip_riders relies on.
+    const requesterJ = await createTestUser('requester-j@rls-test.cycrides.dev')
+    userIdsToCleanUp.push(requesterJ)
+    await admin
+      .from('people')
+      .update({ role: 'requester', name: 'Requester J' })
+      .eq('id', requesterJ.id)
+    const departureTime2 = new Date(
+      Date.now() + 5 * 60 * 60 * 1000,
+    ).toISOString()
+    const { data: rrJData, error: rrJErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterJ.id,
+        airport: 'DAL',
+        departure_flight: 'SW300',
+        departure_time: departureTime2,
+      })
+      .select()
+      .single()
+    expect(rrJErr).toBeNull()
+    const rrJ: string = rrJData.id
+    const fakeId = '00000000-0000-0000-0000-000000000000'
+
+    const { error: partialErr } = await driverD.client.rpc(
+      'create_trip_and_claim_riders',
+      {
+        airport: 'DAL',
+        direction: 'departure',
+        scheduled_time: departureTime2,
+        ride_request_ids: [rrJ, fakeId],
+      },
+    )
+    expect(partialErr).not.toBeNull()
+
+    const { data: tripsAfterPartial } = await admin
+      .from('trips')
+      .select('*')
+      .eq('airport', 'DAL')
+      .eq('direction', 'departure')
+      .eq('scheduled_time', departureTime2)
+    expect(tripsAfterPartial).toHaveLength(0)
+
+    const { data: orphanedTripRiders } = await admin
+      .from('trip_riders')
+      .select('*')
+      .eq('ride_request_id', rrJ)
+    expect(orphanedTripRiders).toHaveLength(0)
+
+    const { data: rrJStillUnconfirmed } = await admin
+      .from('ride_requests')
+      .select('departure_ride_confirmed')
+      .eq('id', rrJ)
+      .single()
+    expect(rrJStillUnconfirmed?.departure_ride_confirmed).toBe(false)
+  })
+})
+
+describe('unclaimed_ride_requests: widened global filters (Prompt #9)', () => {
+  it('each filter narrows results correctly, and no filters returns everything unclaimed', async () => {
+    const now = Date.now()
+    const requesterK = await createTestUser('requester-k@rls-test.cycrides.dev')
+    const requesterL = await createTestUser('requester-l@rls-test.cycrides.dev')
+    const requesterM = await createTestUser('requester-m@rls-test.cycrides.dev')
+    userIdsToCleanUp.push(requesterK, requesterL, requesterM)
+    for (const [u, name] of [
+      [requesterK, 'Requester K'],
+      [requesterL, 'Requester L'],
+      [requesterM, 'Requester M'],
+    ] as const) {
+      await admin
+        .from('people')
+        .update({ role: 'requester', name })
+        .eq('id', u.id)
+    }
+
+    const kArrival = new Date(now + 10 * 60 * 60 * 1000).toISOString()
+    const lArrival = new Date(now + 20 * 60 * 60 * 1000).toISOString()
+    const mDeparture = new Date(now + 30 * 60 * 60 * 1000).toISOString()
+
+    const { data: rrK, error: rrKErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterK.id,
+        airport: 'DFW',
+        arrival_flight: 'FK100',
+        arrival_time: kArrival,
+        staying_at_hotel: true,
+        staying_full_duration: true,
+      })
+      .select()
+      .single()
+    expect(rrKErr).toBeNull()
+
+    const { data: rrL, error: rrLErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterL.id,
+        airport: 'DAL',
+        arrival_flight: 'FL200',
+        arrival_time: lArrival,
+        staying_at_hotel: false,
+      })
+      .select()
+      .single()
+    expect(rrLErr).toBeNull()
+
+    const { data: rrM, error: rrMErr } = await admin
+      .from('ride_requests')
+      .insert({
+        person_id: requesterM.id,
+        airport: 'DFW',
+        departure_flight: 'FM300',
+        departure_time: mDeparture,
+        staying_at_hotel: false,
+      })
+      .select()
+      .single()
+    expect(rrMErr).toBeNull()
+
+    async function idsFor(params: Record<string, unknown>) {
+      const { data, error } = await driverD.client.rpc(
+        'unclaimed_ride_requests',
+        params,
+      )
+      expect(error).toBeNull()
+      return (data ?? []).map(
+        (c: { ride_request_id: string }) => c.ride_request_id,
+      )
+    }
+
+    // No filters: everything unclaimed comes back, including all three.
+    const allIds = await idsFor({})
+    expect(allIds).toEqual(expect.arrayContaining([rrK.id, rrL.id, rrM.id]))
+
+    // airport filter narrows to DFW only.
+    const dfwIds = await idsFor({ p_airport: 'DFW' })
+    expect(dfwIds).toEqual(expect.arrayContaining([rrK.id, rrM.id]))
+    expect(dfwIds).not.toContain(rrL.id)
+
+    // staying_at_hotel filter narrows to true only.
+    const hotelIds = await idsFor({ p_staying_at_hotel: true })
+    expect(hotelIds).toContain(rrK.id)
+    expect(hotelIds).not.toContain(rrL.id)
+    expect(hotelIds).not.toContain(rrM.id)
+
+    // date/time range filter narrows to a window that only covers K's
+    // arrival.
+    const windowIds = await idsFor({
+      p_start_time: new Date(now + 5 * 60 * 60 * 1000).toISOString(),
+      p_end_time: new Date(now + 15 * 60 * 60 * 1000).toISOString(),
+    })
+    expect(windowIds).toContain(rrK.id)
+    expect(windowIds).not.toContain(rrL.id)
+    expect(windowIds).not.toContain(rrM.id)
+
+    // direction is still usable as a filter - departure only returns M.
+    const departureIds = await idsFor({ p_direction: 'departure' })
+    expect(departureIds).toContain(rrM.id)
+    expect(departureIds).not.toContain(rrK.id)
+    expect(departureIds).not.toContain(rrL.id)
+
+    // Each result row carries its own airport/direction now, not just the
+    // caller-supplied filter values.
+    const { data: allRows, error: allRowsErr } = await driverD.client.rpc(
+      'unclaimed_ride_requests',
+      {},
+    )
+    expect(allRowsErr).toBeNull()
+    const kRow = allRows?.find(
+      (r: { ride_request_id: string }) => r.ride_request_id === rrK.id,
+    )
+    expect(kRow).toMatchObject({ airport: 'DFW', direction: 'arrival' })
+  })
+})
+
 describe('anonymous access', () => {
   it('is rejected (zero rows) on every table', async () => {
     const anon = createClient(API_URL, ANON_KEY, {

@@ -9,7 +9,13 @@ import type {
   Trip,
   TripDetail,
   TripRider,
+  UnclaimedCandidate,
+  UnclaimedFilters,
 } from '#/lib/driver/types'
+
+// How far a candidate's flight time may be from a trip's scheduled time and
+// still show up in that trip's "Add riders" list - see getTripDetail below.
+const TRIP_CANDIDATE_WINDOW_HOURS = 3
 
 interface DriverRow {
   id: string
@@ -39,8 +45,14 @@ export interface DriverTripRiderRow {
   staying_full_duration: boolean | null
 }
 
+// unclaimed_ride_requests() was widened in Prompt #9 to power the home
+// page's global candidate list - every row now carries its own
+// airport/direction rather than the caller already knowing them from a
+// single trip's scope.
 interface UnclaimedRideRequestRow {
   ride_request_id: string
+  airport: Airport | null
+  direction: Leg
   person_name: string | null
   flight: string | null
   flight_time: string | null
@@ -205,12 +217,27 @@ export const getTripDetail = createServerFn({ method: 'GET' })
       tripRow.id,
     )
 
+    // Narrow candidates to a window around the trip's own scheduled time -
+    // showing every unclaimed leg for the airport+direction regardless of
+    // when their flight lands/departs made the list mostly irrelevant
+    // noise on a trip with a specific time already picked.
+    const windowMs = TRIP_CANDIDATE_WINDOW_HOURS * 60 * 60 * 1000
+    const referenceTime = tripRow.scheduled_time
+    const windowStart = referenceTime
+      ? new Date(new Date(referenceTime).getTime() - windowMs).toISOString()
+      : null
+    const windowEnd = referenceTime
+      ? new Date(new Date(referenceTime).getTime() + windowMs).toISOString()
+      : null
+
     const { data: candidateData, error: candidatesError } = await supabase.rpc(
       'unclaimed_ride_requests',
       {
         p_airport: tripRow.airport,
         p_direction: tripRow.direction,
-        p_reference_time: tripRow.scheduled_time,
+        p_reference_time: referenceTime,
+        p_start_time: windowStart,
+        p_end_time: windowEnd,
       },
     )
     if (candidatesError) throw candidatesError
@@ -265,3 +292,84 @@ export const removeTripRider = createServerFn({ method: 'POST' })
     })
     if (error) throw error
   })
+
+// Every unclaimed leg across all airports/directions, for the /driver home
+// page's "Riders needing a pickup" section. Filtering (airport, hotel stay,
+// date/time range) happens client-side over this one fetched list rather
+// than being pushed down per keystroke - see the RidersNeedingPickup
+// component.
+export const getUnclaimedCandidates = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<UnclaimedCandidate[]> => {
+    const supabase = getSupabaseServerClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) throw new Error('Not signed in')
+
+    const { data, error } = await supabase.rpc('unclaimed_ride_requests', {})
+    if (error) throw error
+    const rows = (data ?? []) as UnclaimedRideRequestRow[]
+
+    return rows.map((row) => ({
+      rideRequestId: row.ride_request_id,
+      airport: row.airport,
+      direction: row.direction,
+      personName: row.person_name,
+      flight: row.flight,
+      flightTime: row.flight_time,
+      partySize: row.party_size,
+      stayingAtHotel: row.staying_at_hotel,
+      stayingFullDuration: row.staying_full_duration,
+    }))
+  },
+)
+
+export interface CreateTripAndClaimInput {
+  airport: Airport
+  direction: Leg
+  scheduledTime: string
+  rideRequestIds: string[]
+}
+
+// Creates a trip and claims the selected riders in one atomic RPC call - the
+// "+ New trip" path from the home page's action bar. Unlike createTrip
+// above, driver_id is never supplied by the caller; the RPC derives it from
+// the caller's own drivers row.
+export const createTripAndClaimRiders = createServerFn({ method: 'POST' })
+  .validator((data: CreateTripAndClaimInput) => data)
+  .handler(async ({ data }) => {
+    const supabase = getSupabaseServerClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) throw new Error('Not signed in')
+
+    const { data: tripId, error } = await supabase.rpc(
+      'create_trip_and_claim_riders',
+      {
+        airport: data.airport,
+        direction: data.direction,
+        scheduled_time: data.scheduledTime,
+        ride_request_ids: data.rideRequestIds,
+      },
+    )
+    if (error) throw error
+
+    return { id: tripId as string }
+  })
+
+// Pure filter predicate for the client-side filtering in
+// RidersNeedingPickup - kept separate so it's directly unit-testable.
+export function matchesUnclaimedFilters(
+  candidate: UnclaimedCandidate,
+  filters: UnclaimedFilters,
+): boolean {
+  if (filters.airport && candidate.airport !== filters.airport) return false
+  if (filters.stayingAtHotel && !candidate.stayingAtHotel) return false
+  if (candidate.flightTime) {
+    if (filters.startTime && candidate.flightTime < filters.startTime)
+      return false
+    if (filters.endTime && candidate.flightTime > filters.endTime) return false
+  }
+  return true
+}

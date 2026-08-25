@@ -1704,3 +1704,185 @@ every row shape and Supabase select/insert/update) and `request.tsx`'s
   saw a "Hotel" cell in the admin ride-requests table under "Show
   everyone." Reset the local DB back to a clean (unseeded) state
   afterward.
+
+## Prompt #9: Rider-first driver home (browse-and-claim)
+
+**Scope:** Reworked `/driver` from a trip-first dashboard (Prompt #5's
+"create an empty trip, then add riders to it") into a rider-first
+browse-and-claim screen: a "Your trips" section (unchanged from #5.6) plus a
+new "Riders needing a pickup" section listing every unclaimed leg across all
+airports/directions, with filters, multi-select, and an action bar to either
+add the selection to a matching existing trip or create a new trip and claim
+in one atomic step. This supersedes part of Prompt #5's original design —
+see "Why this supersedes Prompt #5" below. `/driver/trips/new` and
+`/driver/trips/:tripId` are both explicitly unchanged (the prompt required
+this); no admin-dashboard changes.
+
+**Why this supersedes Prompt #5:** Prompt #5 required a driver to create a
+trip before seeing any candidates — `unclaimed_ride_requests()` was scoped
+to one trip's airport+direction from the start, and `/driver`'s only action
+was "+ New trip." That's backwards for how driving actually works at a
+conference: drivers want to see who needs a ride first, then decide whether
+an existing trip fits or a new one is needed. `/driver/trips/new` remains as
+a secondary path for a driver who wants to schedule ahead with no riders
+picked yet.
+
+**RPCs/migrations:**
+
+- [supabase/migrations/20260828000000_rider_first_driver_home.sql](supabase/migrations/20260828000000_rider_first_driver_home.sql):
+  - `_add_trip_riders(trip_row, ride_request_ids)` — new internal helper,
+    factored out of `claim_trip_riders`'s insert-trip_riders +
+    flip-confirmed-column logic per the prompt's explicit instruction. Not
+    granted to `authenticated` (does no ownership check of its own; callable
+    only from other `SECURITY DEFINER` functions in this file, which run as
+    this function's owner regardless of grants).
+  - `claim_trip_riders` — redefined to call `_add_trip_riders` instead of
+    duplicating the insert+update. Same signature, same ownership check.
+  - `create_trip_and_claim_riders(airport, direction, scheduled_time,
+    ride_request_ids)` — new RPC. `driver_id` is always the caller's own
+    `drivers.id`, never a parameter, so there is no way to create a trip
+    "as" another driver. Inserts the trip, then calls `_add_trip_riders`; if
+    any `ride_request_ids` entry doesn't exist, the FK violation inside
+    `_add_trip_riders` aborts the whole function invocation (trip insert
+    included) — same all-or-nothing guarantee `claim_trip_riders` already
+    relied on implicitly.
+  - `unclaimed_ride_requests()` — widened: all filter params (`p_airport`,
+    `p_direction`, `p_reference_time`, plus new `p_staying_at_hotel`,
+    `p_start_time`, `p_end_time`) are now optional/nullable, and the return
+    row gains `airport`/`direction` columns. Old 3-arg signature dropped
+    first per the return-shape gotcha flagged in Prompt #8's log. Each
+    `ride_requests` row can now surface as **up to two** candidate rows (one
+    per unclaimed, fully-filled-in leg) via a `cross join (values
+    ('arrival'), ('departure'))`, instead of exactly one row scoped to a
+    single passed-in direction.
+
+**Sort-order assumption:** the trip-detail page's candidate list
+(`/driver/trips/:tripId`, unchanged UI) always passes `p_reference_time`
+(its trip's `scheduled_time`), so it keeps the original proximity sort.
+The new global home view never passes `p_reference_time`, so the RPC falls
+back to sorting chronologically by each row's own relevant time, soonest
+first, per the prompt.
+
+**Filtering is client-side, not re-queried per filter:** `getUnclaimedCandidates()`
+fetches the full unfiltered candidate list once; the airport/hotel/date-range
+filters in `RidersNeedingPickup` narrow that one in-memory array (via the new
+pure `matchesUnclaimedFilters()` helper) rather than re-hitting the RPC per
+filter change. Reasonable at this app's data volume, and keeps the filter UI
+simple to test — the RPC-level filter params still exist and are exercised
+directly by the new RLS tests, so server-side filtering is available if a
+future prompt needs it.
+
+**Files/components introduced:**
+
+- [src/lib/driver/server-functions.ts](src/lib/driver/server-functions.ts) —
+  `getUnclaimedCandidates()`, `createTripAndClaimRiders()`,
+  `matchesUnclaimedFilters()` (pure, directly unit-tested); widened
+  `UnclaimedRideRequestRow` to carry `airport`/`direction`.
+- [src/lib/driver/types.ts](src/lib/driver/types.ts) — `UnclaimedCandidate`,
+  `UnclaimedFilters`. "Matching trips" for the action bar are computed
+  inline in `RiderActionBar` by filtering `Trip[]` — no separate type
+  needed.
+- [src/lib/driver/format.ts](src/lib/driver/format.ts) — `formatDateTime`/
+  `directionLabel`, factored out since the three new components all needed
+  the same formatting `DriverTripCard.tsx`/`driver.trips.$tripId.tsx` had
+  been duplicating locally. Those two existing files were left untouched
+  (not worth the churn of migrating working code to the shared helper in
+  this prompt).
+- [src/components/driver/RidersNeedingPickup.tsx](src/components/driver/RidersNeedingPickup.tsx) —
+  the new section: filters, candidate list, selection state.
+- [src/components/driver/RiderActionBar.tsx](src/components/driver/RiderActionBar.tsx) —
+  sticky action bar; lists matching-trip "Add to trip at HH:MM" buttons,
+  toggles the new-trip form.
+- [src/components/driver/NewTripFromCandidatesForm.tsx](src/components/driver/NewTripFromCandidatesForm.tsx) —
+  the "+ New trip" inline form (read-only airport/direction, editable
+  pre-filled scheduled time).
+- [src/lib/driver/query-keys.ts](src/lib/driver/query-keys.ts) —
+  `unclaimedCandidatesQueryKey`.
+- [src/routes/driver.index.tsx](src/routes/driver.index.tsx) — rewritten to
+  render "Your trips" + `<RidersNeedingPickup>`; the old bare "+ New trip"
+  primary CTA is now a smaller secondary link labeled "+ New trip (no riders
+  yet)" pointing at the unchanged `/driver/trips/new`.
+
+**A real bug caught during live verification, not by the automated
+tests:** a rider with both an unclaimed arrival leg and an unclaimed
+departure leg surfaces as two separate candidate rows sharing the same
+`rideRequestId`. The first implementation keyed the selection `Set` (and
+the list's React `key`) on `rideRequestId` alone, so checking one leg's row
+silently checked/enabled the other leg's row too (a different
+airport/direction, which should have been locked out). Fixed by keying both
+on `` `${rideRequestId}::${direction}` `` (`candidateKey()` in
+`RidersNeedingPickup.tsx`). Caught by manually exercising a seeded rider
+with both legs open in the live dev-bypass browser — the component tests'
+fixtures didn't happen to include a same-person-both-legs case, so this
+class of bug wouldn't have been caught by `npm test` alone. Flagging this
+gap rather than silently fixing it: a future prompt touching this file
+should add a same-person-both-legs fixture to
+`tests/driver/RidersNeedingPickup.test.tsx` to lock the fix in.
+
+**Assumptions made:**
+
+- "Staying at the conference hotel" filter is a single checkbox (checked =
+  only `staying_at_hotel = true`, unchecked = no filter). The prompt didn't
+  specify a tri-state ("staying" / "not staying" / "either"), and a plain
+  boolean filter matches how the existing hotel badge is already
+  binary-ish.
+- Date/time range filter is two plain `datetime-local` inputs ("From"/"To"),
+  matching the existing `TripForm`/`AddRidersForm` input styling; no filter
+  library introduced.
+- "Add to trip at HH:MM" renders one button per matching trip (not a
+  dropdown) — simplest given the action bar already renders inline buttons
+  for other actions, and a driver realistically has at most a handful of
+  same-airport-same-direction trips open at once.
+- No passenger-capacity check in the new browse/claim flow (unlike
+  `AddRidersForm`'s running counter) — the prompt didn't ask for one here,
+  and the trip-detail page's existing capacity check still applies once a
+  driver views the trip afterward. Flagging this as worth reconsidering if
+  overbooking becomes a real problem.
+- `create_trip_and_claim_riders` has no admin-override path (unlike
+  `claim_trip_riders`/`unclaim_trip_rider`) — it always creates a trip owned
+  by the caller's own `drivers` row. The prompt's contract text ("driver_id
+  = caller's own drivers.id") reads as intentional; an admin using this flow
+  would need their own `drivers` row, same as the existing admin dev
+  account already has.
+
+**Left as placeholder / open questions:**
+
+- No router-level test for `driver.index.tsx` itself (verified live only),
+  consistent with this codebase's existing convention that route files
+  aren't unit-tested — only their child presentational components are (see
+  Prompt #5's BUILD_LOG note, still true here).
+- The same-person-both-legs fixture gap noted above.
+
+**Verification:**
+
+- `npx tsc --noEmit` — clean.
+- `npx eslint src/lib/driver src/components/driver src/routes/driver.index.tsx tests/rls.test.ts tests/driver` —
+  clean.
+- `npx prettier --check` on the same paths — clean.
+- `npm run build` — clean; confirmed no `[import-protection]` leak (no new
+  top-level `ReturnType<typeof getSupabaseServerClient>` alias was
+  introduced).
+- `npx supabase db reset` against the new migration — applied cleanly.
+- `npm run test:rls` — 17/17 passing, including two new blocks:
+  `create_trip_and_claim_riders` (self-claim succeeds; a non-driver is
+  rejected and leaves no trip behind; a partially-invalid
+  `ride_request_ids` array leaves no orphaned trip or `trip_riders` row) and
+  `unclaimed_ride_requests: widened global filters` (airport, hotel-stay,
+  and date-range filters each narrow correctly; no filters returns
+  everything unclaimed; each row carries its own airport/direction).
+- `npx vitest run` — 98/98 passing (16 suites; the pre-existing
+  `tests/e2e/smoke.spec.ts` Playwright-in-Vitest failure is unrelated,
+  present on `main` before this change, and not run by `npm test` in
+  practice — that's `npm run test:e2e`).
+- Live-verified end to end in the browser via the dev-auth bypass against
+  seeded fixture data: saw every unclaimed leg across both airports and
+  both directions on `/driver`, soonest-first; selected a rider and
+  confirmed non-matching-airport/direction candidates greyed out
+  (disabled, not hidden); opened "+ New trip," confirmed the scheduled-time
+  field pre-filled with the selected rider's flight time and
+  airport/direction rendered read-only; submitted and confirmed the new
+  trip appeared in "Your trips" with the rider attached, and the rider
+  dropped out of "Riders needing a pickup" after a refetch; confirmed
+  `/driver/trips/new` and an existing `/driver/trips/:tripId` page both
+  still work exactly as before. This is also where the same-person-
+  both-legs selection bug above was caught and fixed.
